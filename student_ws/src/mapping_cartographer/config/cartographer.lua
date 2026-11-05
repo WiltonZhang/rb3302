@@ -12,7 +12,7 @@ options = {
   publish_frame_projected_to_2d = true,
   use_odometry = false,
   use_nav_sat = false,
-  use_landmarks = false,
+  use_landmarks = true,
   num_laser_scans = 1,
   num_multi_echo_laser_scans = 0,
   num_subdivisions_per_laser_scan = 1,
@@ -35,9 +35,9 @@ TRAJECTORY_BUILDER_2D.max_range = 6.0
 TRAJECTORY_BUILDER_2D.missing_data_ray_length = 2.0
 TRAJECTORY_BUILDER_2D.motion_filter.max_distance_meters = 0.25
 TRAJECTORY_BUILDER_2D.motion_filter.max_angle_radians = math.rad(2.0)
-TRAJECTORY_BUILDER_2D.ceres_scan_matcher.translation_weight = 5.0
+TRAJECTORY_BUILDER_2D.ceres_scan_matcher.translation_weight = 1.0
 TRAJECTORY_BUILDER_2D.ceres_scan_matcher.rotation_weight = 1.0
-POSE_GRAPH.constraint_builder.min_score = 0.60
-POSE_GRAPH.optimize_every_n_nodes = 30
+POSE_GRAPH.constraint_builder.min_score = 0.45
+POSE_GRAPH.optimize_every_n_nodes = 60
 
 return options

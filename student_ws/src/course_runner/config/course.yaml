@@ -1,0 +1,14 @@
+# Grid geometry in the map frame of student_ws/maps/rb3302_map.yaml.
+# In that map North = +x, West = +y; square A centre is at (1.725, 2.905).
+# Use with: ros2 run course_runner run_course ... --ros-args --params-file <this>
+course_runner:
+  ros__parameters:
+    frame_id: map
+    cell_size: 0.60
+    a_center_x: 1.725
+    a_center_y: 2.905
+    north_yaw: 0.0        # map yaw of course North (rad)
+    xy_stddev: 0.15       # start-square uncertainty given to AMCL (m)
+    yaw_stddev: 0.5       # brief says bearing is +/-45 deg
+    spin_angle: 6.283     # one full turn to converge AMCL before driving
+    spin_time_allowance: 25.0

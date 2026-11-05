@@ -13,6 +13,7 @@ Packages in this workspace:
 mapping_cartographer  - Cartographer algorithm
 planning_astar        - Planning with A*
 planning_rpp          - Planning with Regulated Pure Pursuit (RPP)
+course_runner         - Graded run: start square + bearing, visit 4 squares A-X
 ```
 
 ## Initialise the Robot
@@ -128,3 +129,29 @@ Start planning:
 ```bash
 ros2 launch planning_rpp planning.launch.py
 ```
+
+## Graded Run (course_runner)
+
+With `robot_init` and one planning package running, give the start square,
+rough bearing (N/E/S/W, +/-45 deg) and the 4 squares to visit:
+
+```bash
+source ~/rb3302_final_proj_code/student_ws/install/setup.bash
+ros2 run course_runner run_course --start S --bearing N --goals A J Q X
+```
+
+The node sets the AMCL initial pose from the start square (no RViz click
+needed), spins once in place to converge AMCL, then sends the squares to
+Nav2's waypoint follower, which stops 3.5 s on each square.
+
+Check the square letters line up with the map before a run (RViz on the
+laptop, `WaypointMarkers` display, topic `/waypoint_markers`):
+
+```bash
+ros2 run course_runner run_course --start S --bearing N --goals A J Q X --dry-run
+```
+
+Grid geometry for `maps/rb3302_map.yaml` (North = +x, West = +y, square A
+centre at (1.725, 2.905), 0.60 m squares) is in
+`src/course_runner/config/course.yaml`. Override with
+`--ros-args --params-file <file>` if the map is replaced.
