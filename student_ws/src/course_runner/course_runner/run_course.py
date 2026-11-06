@@ -32,6 +32,7 @@ from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 from nav2_msgs.action import FollowWaypoints, Spin
 from rclpy.action import ActionClient
 from rclpy.node import Node
+from std_srvs.srv import Trigger
 from visualization_msgs.msg import Marker, MarkerArray
 
 ROWS = 4
@@ -107,6 +108,10 @@ class CourseRunner(Node):
         self.waypoint_client = ActionClient(
             self, FollowWaypoints, 'follow_waypoints')
         self.spin_client = ActionClient(self, Spin, 'spin')
+        # Nav2 only activates planner/controller/behaviors once AMCL publishes
+        # map->odom, i.e. after the initial pose; this service says when it is done.
+        self.nav_active_client = self.create_client(
+            Trigger, 'lifecycle_manager_navigation/is_active')
         self.create_timer(1.0, self.publish_markers)
 
     # ------------------------------------------------------------ geometry
@@ -224,7 +229,8 @@ class CourseRunner(Node):
                 self.get_logger().info('waiting for AMCL on /initialpose ...')
                 rclpy.spin_once(self, timeout_sec=1.0)
             sent = time.monotonic()
-            msg.header.stamp = self.get_clock().now().to_msg()
+            # zero stamp: AMCL uses the latest odom TF instead of failing with
+            # 'extrapolation into the future'
             self.initial_pub.publish(msg)
             deadline = sent + 2.0
             while time.monotonic() < deadline:
@@ -249,8 +255,32 @@ class CourseRunner(Node):
                math.sqrt(max(cov[0], 0.0)), math.sqrt(max(cov[7], 0.0)),
                math.sqrt(max(cov[35], 0.0))))
 
+    def wait_for_nav_active(self, timeout=90.0):
+        """Block until lifecycle_manager_navigation reports all servers active."""
+        start = time.monotonic()
+        last_log = 0.0
+        while time.monotonic() - start < timeout:
+            if self.nav_active_client.wait_for_service(timeout_sec=1.0):
+                future = self.nav_active_client.call_async(Trigger.Request())
+                rclpy.spin_until_future_complete(self, future, timeout_sec=2.0)
+                if future.done() and future.result() is not None \
+                        and future.result().success:
+                    self.get_logger().info(
+                        'Nav2 active after %.1f s' % (time.monotonic() - start))
+                    return True
+            if time.monotonic() - last_log > 3.0:
+                last_log = time.monotonic()
+                self.get_logger().info('waiting for Nav2 servers to become active ...')
+            end = time.monotonic() + 0.5
+            while time.monotonic() < end:
+                rclpy.spin_once(self, timeout_sec=0.1)
+        self.get_logger().error(
+            'Nav2 not active after %.0f s - check lifecycle_manager_navigation '
+            'output in the planning terminal' % timeout)
+        return False
+
     # ------------------------------------------------------------- actions
-    def _send(self, client, goal, name, feedback_cb=None, retries=5):
+    def _send(self, client, goal, name, feedback_cb=None, retries=10):
         """Send an action goal, retrying while Nav2 is still activating."""
         self.get_logger().info('waiting for %s action server ...' % name)
         client.wait_for_server()
@@ -338,6 +368,8 @@ def main(argv=None):
         t0 = time.monotonic()
         if not node.set_initial_pose():
             node.get_logger().error('AMCL never accepted the initial pose')
+            return
+        if not node.wait_for_nav_active():
             return
         if node.do_spin:
             node.localisation_spin()
