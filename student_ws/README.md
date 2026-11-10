@@ -146,21 +146,13 @@ stops 3.5 s on it.
 
 By default (`--planner grid`) each leg is planned with A* over the 24 squares
 (walls from the L08b brief, plus squares the global costmap shows as blocked).
-The route goes through square centres. In each square where it turns, it
-follows a 0.30 m arc (`corner_radius`) from the edge it enters by to the edge
-it leaves by, so the robot starts turning as soon as it enters the square; RPP
-slows to 0.12 m/s on the arc and steers it. Each leg goes
-straight in to the goal centre and is sent in one go to the RPP controller
-(`follow_path`). At each goal the robot turns on the spot (Nav2 `spin`) onto
-the next leg. Each path ends 3 cm past the goal centre (`goal_extension`) so
-the goal checker stops the robot on the centre, not 4 cm short of it. If the
-robot still ends more than 5 cm from a goal centre (`centre_tolerance`), it
-turns towards the centre and drives onto it once before the 3.5 s stop. The
-whole leg is shown on `/plan`. If a leg fails it is replanned, and the last
-resort is Nav2's planner (`navigate_to_pose`). If you know which square holds
-the obstacle, add `--avoid P`. `corner_radius: 0.0` drives straight runs and
-turns on the spot at every corner instead. To use the previous behaviour (Nav2
-waypoint follower with NavFn A*), add `--planner nav2`.
+The route goes through square centres, rounds the corner (0.30 m arc) in any
+square it only passes through, and goes straight in to the goal centre. The
+path is sent straight to the RPP controller (`follow_path`) and shown on
+`/plan`. The robot turns on the spot onto each leg first. If a leg fails it is
+replanned, and the last resort is Nav2's planner (`navigate_to_pose`). If you
+know which square holds the obstacle, add `--avoid P`. To use the previous
+behaviour (Nav2 waypoint follower with NavFn A*), add `--planner nav2`.
 
 Check the square letters line up with the map before a run (RViz on the
 laptop, `WaypointMarkers` display, topic `/waypoint_markers`):

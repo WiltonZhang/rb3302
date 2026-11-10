@@ -14,13 +14,9 @@ course_runner:
     spin_time_allowance: 25.0
     # --- grid planner (default --planner grid) ---
     base_frame: base_link
-    corner_radius: 0.30   # corner arc radius; 0.30 (= cell/2) starts the turn at the
-                          # edge of the square; 0: straight runs + turn on the spot
+    corner_radius: 0.30   # arc radius at squares the route turns in (<= cell/2 stays inside)
     path_step: 0.025      # path point spacing (m)
-    turn_penalty: 1.0     # A* extra cost per corner (a stop + turn costs about one square)
-    goal_extension: 0.03  # path ends this far past each centre so the goal checker
-                          # (xy_goal_tolerance 0.04) stops the robot on the centre
-    centre_tolerance: 0.05 # further than this from a goal centre -> one straight correction
+    turn_penalty: 0.5     # A* extra cost per corner: prefer routes with fewer turns
     stop_seconds: 3.5     # rule is 3 s stopped per square; 0.5 s margin
     align_min_angle: 0.20 # turn on the spot before a leg if heading is off by more (rad)
     align_time_allowance: 10.0
