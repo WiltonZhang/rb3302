@@ -140,8 +140,7 @@ local_costmap:
       # 18 x 19 cm measured; length/width axis not specified, so 19 cm is used
       # on both axes (costs 5 mm). base_link assumed at the chassis centre.
       footprint: "[[0.095, 0.095], [0.095, -0.095], [-0.095, -0.095], [-0.095, 0.095]]"
-      # 0.01 -> 0.02: 1 cm more margin for differences between the mapped and real walls
-      footprint_padding: 0.02
+      footprint_padding: 0.01
       plugins: ["obstacle_layer", "inflation_layer"]
       obstacle_layer:
         plugin: nav2_costmap_2d::ObstacleLayer
@@ -172,8 +171,7 @@ global_costmap:
       robot_base_frame: base_link
       resolution: 0.05
       footprint: "[[0.095, 0.095], [0.095, -0.095], [-0.095, -0.095], [-0.095, 0.095]]"
-      # 0.01 -> 0.02: 1 cm more margin for differences between the mapped and real walls
-      footprint_padding: 0.02
+      footprint_padding: 0.01
       track_unknown_space: true
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
       static_layer:

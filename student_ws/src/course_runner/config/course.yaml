@@ -18,19 +18,9 @@ course_runner:
     path_step: 0.025      # path point spacing (m)
     turn_penalty: 0.5     # A* extra cost per corner: prefer routes with fewer turns
     stop_seconds: 3.5     # rule is 3 s stopped per square; 0.5 s margin
-    align_min_angle: 0.08 # turn on the spot before a leg if heading is off by more (rad, ~4.6 deg)
+    align_min_angle: 0.20 # turn on the spot before a leg if heading is off by more (rad)
     align_time_allowance: 10.0
     blocked_cost: 99      # global costmap value (99 inscribed, 100 lethal) that blocks a square
     replan_attempts: 3    # grid replans per leg before falling back to the Nav2 planner
     controller_id: FollowPath
     goal_checker_id: goal_checker
-    server_timeout: 3.0         # give up on a Nav2 action server that is not there after this (s)
-    strict_lines: true          # straight runs centre to centre, turn on the spot at corners (--round-corners for arcs)
-    # --- LiDAR centring on each goal square (disable with --no-centre) ---
-    centre_with_lidar: true
-    wall_face_distance: 0.25    # square centre -> wall face when only one of two opposite walls exists (m)
-    centre_tolerance: 0.02      # leave offsets smaller than this (m)
-    centre_max_correction: 0.12 # offsets bigger than this are treated as a bad reading (m)
-    centre_speed: 0.10          # speed of the small correction moves (m/s)
-    base_to_centre_x: 0.0       # chassis centre is this far ahead of base_link (m); set from a tape measurement
-    turn_clearance: 0.15        # no sideways correction if a wall is closer than this (corner of 19x19 cm sweeps 0.134 m)
