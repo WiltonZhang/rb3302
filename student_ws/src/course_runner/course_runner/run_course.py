@@ -142,7 +142,7 @@ def grid_astar(start, goal, blocked=(), turn_penalty=0.5):
     return None
 
 
-def corner_curve(turn, tangent, step, smoothness=0.5):
+def corner_curve(turn, tangent, step, smoothness=0.6):
     """Points of a smooth turn by `turn` rad, in a frame starting at (0, 0) heading +x.
 
     Heading follows turn * (s - a sin(2 pi s) / (2 pi)) for s = 0..1, with
@@ -167,7 +167,7 @@ def corner_curve(turn, tangent, step, smoothness=0.5):
     return [(xs[i * n // m] * scale, ys[i * n // m] * scale) for i in range(1, m + 1)]
 
 
-def rounded_polyline(corners, distance, step, smoothness=0.5):
+def rounded_polyline(corners, distance, step, smoothness=0.6):
     """Sample a polyline through corners, with a smooth turn at every inner corner.
 
     Each turn starts `distance` before the corner and ends `distance` after
@@ -259,14 +259,12 @@ class CourseRunner(Node):
         # grid planner
         self.declare_parameter('base_frame', 'base_link')
         self.declare_parameter('corner_distance', 0.30)
-        self.declare_parameter('corner_smoothness', 0.5)
+        self.declare_parameter('corner_smoothness', 0.6)
         self.declare_parameter('path_step', 0.025)
         self.declare_parameter('turn_penalty', 0.5)
         self.declare_parameter('stop_seconds', 3.5)
-        # c2bb18f used 0.04 rad x 3 tries: tighter than this skid-steer can turn
-        # (Spin's slowest command still overshoots ~5 deg), so it kept turning.
-        self.declare_parameter('align_tolerance', 0.10)
-        self.declare_parameter('align_attempts', 2)
+        self.declare_parameter('align_tolerance', 0.04)
+        self.declare_parameter('align_attempts', 3)
         self.declare_parameter('align_time_allowance', 10.0)
         self.declare_parameter('merge_distance', 0.50)
         # AMCL convergence (no-motion updates while stopped)
@@ -789,10 +787,8 @@ class CourseRunner(Node):
                 break
             self.get_logger().info(
                 'route %s (attempt %d)' % (' -> '.join(route), attempt))
-            # face along the compass axis of the first straight; only once per
-            # leg, so a failed leg does not start another round of turning
-            if attempt == 1:
-                self.turn_to(poses[0][2])
+            # face exactly along the compass axis of the first straight
+            self.turn_to(poses[0][2])
             poses = self.merge_onto_path(poses)
             self.publish_path(poses)
             if self.follow_path(poses):

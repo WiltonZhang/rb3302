@@ -19,12 +19,12 @@ course_runner:
     # --- grid planner (default --planner grid) ---
     base_frame: base_link
     corner_distance: 0.30 # a turn starts/ends this far from the square centre (<= cell/2)
-    corner_smoothness: 0.5 # 0 = circular arc, 1 = steering ramps from zero (tighter middle)
+    corner_smoothness: 0.6 # 0 = circular arc, 1 = steering ramps from zero (tighter middle)
     path_step: 0.025      # path point spacing (m)
     turn_penalty: 0.5     # A* extra cost per corner: prefer routes with fewer turns
     stop_seconds: 3.5     # rule is 3 s stopped per square; 0.5 s margin
-    align_tolerance: 0.10 # turn on the spot until within this of the compass axis (rad, ~6 deg)
-    align_attempts: 2     # at most 2 turns before each leg; RPP + path merge do the rest
+    align_tolerance: 0.04 # turn on the spot until within this of the compass axis (rad, ~2.3 deg)
+    align_attempts: 3
     align_time_allowance: 10.0
     merge_distance: 0.50  # blend a start offset back onto the centre line over this (m)
     settle_yaw_std: 0.04  # AMCL no-motion updates while stopped until yaw std (rad)

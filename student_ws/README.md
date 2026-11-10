@@ -150,7 +150,7 @@ The route goes through square centres, with a smooth turn (steering ramps
 in and out, starting 0.30 m before the centre) in any square it only passes
 through, and goes straight in to the goal centre. The path is sent straight
 to the RPP controller (`follow_path`) and shown on `/plan`. Before each leg the
-robot turns on the spot (at most twice) until it is within ~6 deg of the compass axis, and
+robot turns on the spot until it is within ~2 deg of the compass axis, and
 AMCL is refined with no-motion updates during each 3.5 s stop. Squares are
 spaced 0.62 m (measured course) about the course centre; `cell_size` in
 `course.yaml` sets this. If a leg fails it is
