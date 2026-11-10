@@ -97,7 +97,9 @@ controller_server:
       # 2.5 overshot every turn (RPP has no slow-down near the target heading),
       # so it is back to 1.5. Big turns are done by Spin in course_runner,
       # which does slow down; this is only the fallback.
-      rotate_to_heading_angular_vel: 1.2
+      # 1.2 -> 1.0: RPP turns at full speed until the error is below
+      # rotate_to_heading_min_angle, so a lower speed overshoots less.
+      rotate_to_heading_angular_vel: 1.0
       transform_tolerance: 0.2
       min_approach_linear_velocity: 0.08
       approach_velocity_scaling_dist: 0.20
@@ -120,8 +122,9 @@ controller_server:
       # sideways (6 cm at 0.25 m lookahead is 14 deg), and then it overshot.
       # 45 deg lets RPP steer through small errors and the grid path's arcs
       # while driving; turns at the start of a leg are done by Spin.
-      # 0.785 -> 0.5: turn on the spot instead of swinging wide off the path
-      rotate_to_heading_min_angle: 0.5
+      # 0.5 near the 3 cm goal and on corners kept starting full-speed turns
+      # that overshot (legs ended 15-39 deg off), so back to 0.785.
+      rotate_to_heading_min_angle: 0.785
       # RPP limits each in-place turn command to measured rate + accel*dt.
       # At 2.0 that is 0.1 rad/s from standstill, too little to beat tyre scrub,
       # so the robot never starts turning. Smoothing is left to velocity_smoother.
@@ -250,7 +253,8 @@ behavior_server:
     # turns from overshooting (2.5 overshot).
     max_rotational_vel: 1.44
     min_rotational_vel: 0.6
-    rotational_acc_lim: 4.0
+    # 4.0 -> 2.0: start slowing ~30 deg before the target instead of ~15 deg
+    rotational_acc_lim: 2.0
 
 velocity_smoother:
   ros__parameters:
