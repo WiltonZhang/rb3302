@@ -132,27 +132,55 @@ ros2 launch planning_rpp planning.launch.py
 
 ## Graded Run (course_runner)
 
-With `robot_init` and one planning package running, give the start square,
-rough bearing (N/E/S/W, +/-45 deg) and the 4 squares to visit:
+Build once after pulling (adds the `odom_sign` executable):
+
+```bash
+cd ~/rb3302_final_proj_code/student_ws
+colcon build --symlink-install --packages-select course_runner planning_rpp planning_astar
+```
+
+On the robot, after `robot_init`, start these in order, each in its own terminal:
+
+```bash
+source ~/rb3302_final_proj_code/student_ws/install/setup.bash
+ros2 run course_runner odom_sign
+```
+
+```bash
+source ~/rb3302_final_proj_code/student_ws/install/setup.bash
+ros2 launch planning_rpp planning.launch.py raw_odom_topic:=/odom/raw_signed
+```
 
 ```bash
 source ~/rb3302_final_proj_code/student_ws/install/setup.bash
 ros2 run course_runner run_course --start S --bearing N --goals A J Q X
 ```
 
-The node sets the AMCL initial pose from the start square (no RViz click
-needed), spins once in place to converge AMCL, then drives to each square and
-stops 3.5 s on it.
+`odom_sign` puts the direction back on the wheel speed. The board reports it
+without a sign, so reversing and turning on the spot read as driving forward,
+and the EKF slid the robot across the map while it was really turning in place.
+`raw_odom_topic:=/odom/raw_signed` is an existing argument of both planning
+launch files, so no launch file is changed. `planning_astar` works the same way.
+
+The runner sets the AMCL initial pose from the start square (no RViz click
+needed) and then localises without moving: it asks AMCL for stationary updates
+until 95 % of the LiDAR points land on mapped walls (usually a few seconds),
+then clears the costmaps. `--localise spin` brings back the 360 deg turn and
+`--localise none` skips both.
 
 By default (`--planner grid`) each leg is planned with A* over the 24 squares
 (walls from the L08b brief, plus squares the global costmap shows as blocked).
-The route goes through square centres, rounds the corner (0.30 m arc) in any
-square it only passes through, and goes straight in to the goal centre. The
-path is sent straight to the RPP controller (`follow_path`) and shown on
-`/plan`. The robot turns on the spot onto each leg first. If a leg fails it is
-replanned, and the last resort is Nav2's planner (`navigate_to_pose`). If you
-know which square holds the obstacle, add `--avoid P`. To use the previous
-behaviour (Nav2 waypoint follower with NavFn A*), add `--planner nav2`.
+The route goes through square centres, rounds the corner (0.29 m arc) in any
+square it only passes through, and ends 3 cm past the goal centre so the robot
+stops on it. The path is sent straight to the RPP controller (`follow_path`) and
+shown on `/plan`. While the robot drives, the runner watches the global costmap
+1.2 m ahead along the route: if a square on it becomes blocked (the obstacle),
+the leg is stopped and replanned around that square. After each goal the robot
+drives forward onto the centre if it stopped more than 4 cm off, stops 3.5 s,
+and then turns on the spot onto the next leg there, on the centre and clear of
+the walls. If a leg fails it is replanned, and the last resort is Nav2's planner
+(`navigate_to_pose`). If you know which square holds the obstacle, add
+`--avoid P`. `--planner nav2` uses the Nav2 waypoint follower with NavFn A* instead.
 
 Check the square letters line up with the map before a run (RViz on the
 laptop, `WaypointMarkers` display, topic `/waypoint_markers`):
@@ -161,7 +189,9 @@ laptop, `WaypointMarkers` display, topic `/waypoint_markers`):
 ros2 run course_runner run_course --start S --bearing N --goals A J Q X --dry-run
 ```
 
-Grid geometry for `maps/rb3302_map.yaml` (North = +x, West = +y, square A
-centre at (1.725, 2.905), 0.60 m squares) is in
-`src/course_runner/config/course.yaml`. Override with
-`--ros-args --params-file <file>` if the map is replaced.
+Grid geometry for `maps/rb3302_map.yaml` (+x East, +y North, (0, 0) at the
+south-west corner of the course, 0.5825 m squares, square A centre at
+(0.291, 2.039)) is in `src/course_runner/config/course.yaml` and is also the
+default in `run_course.py`. Goals are aimed 2.4 cm low in x and y
+(`aim_offset_x`, `aim_offset_y`) because AMCL reports poses half a map cell low.
+Override with `--ros-args --params-file <file>` if the map is replaced.

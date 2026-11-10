@@ -1,8 +1,14 @@
-# RB3302 Nav2 parameters, tuned for:
-#   - Wave Rover, measured 18 x 19 cm (footprint uses 19 x 19 cm, see below)
-#   - 4 x 6 course of 60 cm squares, walls drawn 10 cm thick in rb3302_map.pgm
-#     -> 50 cm of free space per square, ~15 cm clearance each side when centred
+# RB3302 Nav2 parameters (planning_rpp and planning_astar use the same file), tuned for:
+#   - Wave Rover 4WD skid-steer, measured 18 x 19 cm. It turns at ~1/3-1/2 of the
+#     commanded rate and stalls below ~1.0 rad/s (tyre scrub).
+#   - rb3302_map: 4 x 6 squares of 58.25 cm, walls drawn 2 px (9.7 cm) thick
+#     -> 48.5 cm of free space per square in the map (~56 cm on the real course)
 #   - graded run: reach + stop 3 s on each of 4 squares inside 3 min
+#   - wheel odometry with its sign restored by course_runner's odom_sign node:
+#       ros2 launch planning_rpp planning.launch.py raw_odom_topic:=/odom/raw_signed
+#     The board reports wheel speed without a sign, so turning on the spot and
+#     reversing used to read as driving forward (see docs/claude-handoff/TUNING_REVIEW.md).
+# Base: the 116bdf3 values. Every value changed from 116bdf3 says so in its comment.
 
 amcl:
   ros__parameters:
@@ -12,29 +18,35 @@ amcl:
     global_frame_id: map
     scan_topic: scan
     robot_model_type: nav2_amcl::DifferentialMotionModel
-    # EKF odom (wheel vx + IMU yaw) is decent; 0.8 spread particles too much.
-    # Heading comes from the IMU via EKF, so odometry can be trusted more.
-    alpha1: 0.1
-    alpha2: 0.1
-    alpha3: 0.1
-    alpha4: 0.1
-    alpha5: 0.2
+    # Let the LiDAR correct the wheels. At 0.1 AMCL followed the odometry's
+    # phantom forward motion during turns on the spot and lost the robot
+    # (std 0.4-0.56 m in the c2bb18f / 04af912 runs). Friend B runs 0.3-0.4,
+    # friend A 0.8. (116bdf3: 0.1, 0.1, 0.1, 0.1, 0.2)
+    alpha1: 0.4    # rotation noise from rotation
+    alpha2: 0.3    # rotation noise from translation
+    alpha3: 0.4    # translation noise from translation
+    alpha4: 0.4    # translation noise from rotation
+    alpha5: 0.3    # omni robots only, unused
     laser_model_type: likelihood_field
     laser_min_range: 0.15            # ignore returns off the robot's own body
     laser_max_range: 6.0             # whole course is < 4 m across
     max_beams: 90
     sigma_hit: 0.1
-    z_hit: 0.6
-    z_rand: 0.4
+    # Weight scan points that land on mapped walls more (friend A's values,
+    # tuned on a real-robot recording). (116bdf3: z_hit 0.6, z_rand 0.4)
+    z_hit: 0.8
+    z_rand: 0.2
     laser_likelihood_max_dist: 1.0
     min_particles: 500
     max_particles: 3000
     pf_err: 0.05
     pf_z: 0.99
-    # Update often: cells are only 60 cm and the start yaw is only +/-45 deg.
     update_min_d: 0.05
-    update_min_a: 0.1
+    # Update every ~3 deg of turning so the heading stays right through turns
+    # (friend A 0.05, friend B 0.03). (116bdf3: 0.1)
+    update_min_a: 0.05
     resample_interval: 1
+    # No random particles: in a grid of identical squares they jump to the wrong square.
     recovery_alpha_fast: 0.0
     recovery_alpha_slow: 0.0
     transform_tolerance: 0.5
@@ -74,27 +86,29 @@ controller_server:
       movement_time_allowance: 15.0
     goal_checker:
       plugin: nav2_controller::SimpleGoalChecker
-      # Scoring needs the robot inside the square AND over the centre label.
-      xy_goal_tolerance: 0.04
+      # Scoring needs the robot over the centre label. course_runner ends every
+      # path goal_extension (3 cm) past the centre, so with this tolerance the
+      # robot stops on the centre instead of 3-4 cm short. 7f6eeaf used 0.03 in
+      # the run that "went almost perfectly". (116bdf3: 0.04)
+      xy_goal_tolerance: 0.03
       # Orientation is not scored -> do not waste time turning at each square.
       yaw_goal_tolerance: 3.14
       stateful: true
     FollowPath:
       plugin: nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController
-      desired_linear_vel: 0.22
-      # Short lookahead so the carrot does not cut 90 deg corners into walls.
-      # 0.20 also keeps the steady heading error on the 0.30 m corner arcs of
-      # course_runner's grid path below rotate_to_heading_min_angle.
+      # 7f6eeaf's speed. Back to 0.22 if a 4-square mission gets close to 3 min.
+      # (116bdf3: 0.22)
+      desired_linear_vel: 0.18
+      # Fixed 0.20 m lookahead. 0.15 (7f6eeaf) turned each 2-3 cm AMCL correction
+      # into a sharp steer (zigzag on straights); the velocity-scaled lookahead
+      # (0cbd2e4) followed the driver's jumpy speed reading and sat at its minimum.
       lookahead_dist: 0.20
       min_lookahead_dist: 0.15
       max_lookahead_dist: 0.35
       lookahead_time: 1.5
       use_velocity_scaled_lookahead_dist: false
-      # 4WD skid-steer only turns at ~1/3 of the commanded rate (360 deg spin took 18 s at 1.0).
-      # Teleop turns well at 1.5; driver clamps at 3.0.
-      # 2.5 overshot every turn (RPP has no slow-down near the target heading),
-      # so it is back to 1.5. Big turns are done by Spin in course_runner,
-      # which does slow down; this is only the fallback.
+      # The turn rate that ran on the robot. 1.2 / 1.0 / 0.8 (3023d14, dbacc72,
+      # 479a950) stalled near tyre scrub; 2.5 (d4c9121) overshot every turn.
       rotate_to_heading_angular_vel: 1.5
       transform_tolerance: 0.2
       min_approach_linear_velocity: 0.08
@@ -102,26 +116,25 @@ controller_server:
       use_collision_detection: true
       max_allowed_time_to_collision_up_to_carrot: 1.0
       use_regulated_linear_velocity_scaling: true
-      # Slow down on the 0.30 m corner arcs (0.22 * 0.30 / 0.45 = 0.15 m/s)
-      # so the skid-steer can keep up with the turn.
       regulated_linear_scaling_min_radius: 0.45
+      # Below ~0.12 m/s the arc turn command (speed x curvature) is too small to
+      # turn the skid-steer (0cbd2e4 used 0.08 and got stuck turning).
       regulated_linear_scaling_min_speed: 0.12
-      use_cost_regulated_linear_velocity_scaling: true
+      # Off: once the local costmap really sees the walls (max_obstacle_height
+      # below) this would slow the robot whenever a wall is near, which is
+      # everywhere in a 58 cm square. Both friends run it off. (116bdf3: true)
+      use_cost_regulated_linear_velocity_scaling: false
       cost_scaling_dist: 0.12
       cost_scaling_gain: 1.0
       inflation_cost_scaling_factor: 10.0   # must match local inflation_layer
       allow_reversing: false
       use_rotate_to_heading: true
-      # Arcs command only w = v * curvature (0.3-0.6 rad/s at < 23 deg error,
-      # ~0.1-0.2 rad/s actual). 0.25 (14 deg) made the robot stop and spin
-      # whenever a 1 Hz replan or an AMCL correction moved the carrot a few cm
-      # sideways (6 cm at 0.25 m lookahead is 14 deg), and then it overshot.
-      # 45 deg lets RPP steer through small errors and the grid path's arcs
-      # while driving; turns at the start of a leg are done by Spin.
+      # Turn on the spot only when the carrot is more than 45 deg off. 0.5 (7f6eeaf)
+      # and 0.25 (d4c9121) turned small AMCL corrections into stop-and-spin events;
+      # 1.0 (0cbd2e4) started turns too late.
       rotate_to_heading_min_angle: 0.785
-      # RPP limits each in-place turn command to measured rate + accel*dt.
-      # At 2.0 that is 0.1 rad/s from standstill, too little to beat tyre scrub,
-      # so the robot never starts turning. Smoothing is left to velocity_smoother.
+      # RPP limits each turn command to the measured turn rate + accel * dt. At 2.0
+      # that is 0.1 rad/s from standstill, which never beats tyre scrub.
       max_angular_accel: 20.0
       max_robot_pose_search_dist: 1.0
 
@@ -137,10 +150,14 @@ local_costmap:
       width: 2
       height: 2
       resolution: 0.05
-      # 18 x 19 cm measured; length/width axis not specified, so 19 cm is used
-      # on both axes (costs 5 mm). base_link assumed at the chassis centre.
-      footprint: "[[0.095, 0.095], [0.095, -0.095], [-0.095, -0.095], [-0.095, 0.095]]"
-      footprint_padding: 0.01
+      # A disc that covers the robot while it turns on the spot: 18 x 19 cm has a
+      # 13.1 cm half-diagonal, plus ~1 cm for where base_link really sits. With
+      # the 19 x 19 cm square footprint, paths and collision checks allowed spots
+      # where the corners swept into the wall as soon as the robot turned, as in
+      # the dead ends (friend A uses the same idea, 0.13 for a 19.4 x 16.8 cm robot).
+      # (116bdf3: 19 x 19 cm square footprint + 0.01 padding)
+      robot_radius: 0.14
+      footprint_padding: 0.0
       plugins: ["obstacle_layer", "inflation_layer"]
       obstacle_layer:
         plugin: nav2_costmap_2d::ObstacleLayer
@@ -151,6 +168,11 @@ local_costmap:
           data_type: LaserScan
           clearing: true
           marking: true
+          # Nav2's default for a scan source is 0.0 m and the LiDAR sits 9 cm above
+          # base_link, so without this every scan point was thrown away: this
+          # costmap stayed empty and an obstacle box would be invisible (friend A
+          # found the same). (116bdf3: not set)
+          max_obstacle_height: 2.0
           obstacle_min_range: 0.15
           obstacle_max_range: 2.0
           raytrace_min_range: 0.15
@@ -169,16 +191,22 @@ global_costmap:
       publish_frequency: 1.0
       global_frame: map
       robot_base_frame: base_link
-      resolution: 0.05
-      footprint: "[[0.095, 0.095], [0.095, -0.095], [-0.095, -0.095], [-0.095, 0.095]]"
-      footprint_padding: 0.01
+      # The static layer resizes this costmap to the map anyway; set to match
+      # rb3302_map.yaml. (116bdf3: 0.05, the old map's resolution)
+      resolution: 0.04854167
+      # This costmap can only start once AMCL publishes map->odom, i.e. after the
+      # start pose is sent. The default 60 s made Nav2 give up when the run was
+      # started more than a minute after the launch (friend A's fix). (116bdf3: not set)
+      initial_transform_timeout: 600.0
+      robot_radius: 0.14               # see local_costmap (116bdf3: square footprint)
+      footprint_padding: 0.0
       track_unknown_space: true
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
       static_layer:
         plugin: nav2_costmap_2d::StaticLayer
         map_subscribe_transient_local: true
       obstacle_layer:
-        # Marks the possible obstacle blocking a square so A* routes around it.
+        # Marks the possible obstacle blocking a square so course_runner routes around it.
         plugin: nav2_costmap_2d::ObstacleLayer
         enabled: true
         observation_sources: scan
@@ -187,13 +215,14 @@ global_costmap:
           data_type: LaserScan
           clearing: true
           marking: true
+          max_obstacle_height: 2.0     # see local_costmap (116bdf3: not set)
           obstacle_min_range: 0.15
           obstacle_max_range: 2.5
           raytrace_min_range: 0.15
           raytrace_max_range: 3.0
       inflation_layer:
-        # Centre of a 50 cm gap is ~0.275 m from the wall cell centres:
-        # cost there ~45/252, so A* is pulled to the middle of each square.
+        # A square centre is 0.243 m from the drawn walls: cost there ~90/252, so
+        # NavFn (fallback planner) is pulled to the middle of each square.
         plugin: nav2_costmap_2d::InflationLayer
         inflation_radius: 0.30
         cost_scaling_factor: 10.0
@@ -246,7 +275,11 @@ behavior_server:
     # Spin slows down as it nears the target; 1.8 cap keeps the 90 deg leg
     # turns from overshooting (2.5 overshot).
     max_rotational_vel: 1.8
-    min_rotational_vel: 0.6
+    # Spin ramps down to this for the last few degrees. 0.6 is below the
+    # ~0.8-1.0 rad/s this base needs to beat tyre scrub, so it could stall a few
+    # degrees short and sit there until the time allowance ran out (a stop at the
+    # turn). 1.0 rad/s did turn the robot in the first field test. (116bdf3: 0.6)
+    min_rotational_vel: 1.0
     rotational_acc_lim: 4.0
 
 velocity_smoother:
@@ -254,8 +287,8 @@ velocity_smoother:
     use_sim_time: false
     smoothing_frequency: 20.0
     feedback: OPEN_LOOP
-    # Driver (driver.launch.py) clamps at 0.8 m/s / 3.0 rad/s. Linear kept low for the 60 cm grid;
-    # angular at the clamp because skid-steer turns at ~1/3 of the command.
+    # Driver (driver.launch.py) clamps at 0.8 m/s / 3.0 rad/s. Linear kept low for the
+    # 58 cm grid; angular near the clamp because skid-steer turns at ~1/3 of the command.
     max_velocity: [0.25, 0.0, 2.8]
     min_velocity: [-0.25, 0.0, -2.8]
     max_accel: [0.6, 0.0, 6.0]

@@ -4,6 +4,11 @@ This is the record of the first Claude session on this project. It covers the ta
 the system facts worked out, every change made and why, and the owner's field-test logs (quoted
 exactly). The project rules are in `/CLAUDE.md`.
 
+> **11 Nov 2026:** the review of every tuning commit, the root causes found (unsigned wheel
+> odometry, AMCL trusting it, a blind obstacle layer), the comparison with two friends' setups and
+> the current state (new 58.25 cm map, `odom_sign`, stand-still localisation) are in
+> [`TUNING_REVIEW.md`](TUNING_REVIEW.md). It supersedes the map, frame and parameter facts below.
+
 ---
 
 ## 1. Task requirements (from the course briefs)
@@ -54,11 +59,16 @@ exactly). The project rules are in `/CLAUDE.md`.
   of 0.8 s. Keyboard teleop defaults to 1.5 rad/s, which turns well.
 - **Skid-steer turn tracking:** a 360° spin commanded at 1.0 rad/s took about 18 s, so the robot
   actually turns at about ⅓ of the commanded rate.
-- **Map:** `student_ws/maps/rb3302_map.yaml` + `.pgm` is the owner's cleaned Cartographer map
-  (originally named `rb3302_map_clean.*`). It is 71 × 90 px at 0.05 m/px, with
+- **Map (since 11 Nov):** `student_ws/maps/rb3302_map.yaml` + `.pgm` is now drawn on the
+  friend's measured 58.25 cm grid: 84 × 60 px at 0.04854167 m/px, `origin: [-0.29125, -0.29125, 0]`,
+  **+x = East, +y = North**, (0, 0) at the course's south-west corner, square A's centre at
+  (0.29125, 2.03875). Walls are drawn exactly like the old map (2 px, 9.7 cm, straddling each grid
+  line), leaving 48.5 cm of free space per square. See `TUNING_REVIEW.md` section 6.
+- **Map (until 10 Nov):** the owner's cleaned Cartographer map (originally named
+  `rb3302_map_clean.*`). It was 71 × 90 px at 0.05 m/px, with
   `origin: [-0.925, -0.845, 0]`. The walls are drawn 2 px (10 cm) thick on a 12 px (0.60 m)
   pitch, which leaves 50 cm of free space per square.
-- **Map frame vs course:** **+x = North, +y = West.** Square A's centre is at
+- **Map frame vs course (until 10 Nov):** **+x = North, +y = West.** Square A's centre is at
   (1.725, 2.905), and the squares are 0.60 m apart:
   - centre(row r, col c) = (1.725 − 0.6·r, 2.905 − 0.6·c), where r = 0..3 runs N→S and c = 0..5
     runs W→E. For example, S = (−0.075, 2.905), M = (0.525, 2.905), N = (0.525, 2.305),

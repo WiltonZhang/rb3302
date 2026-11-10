@@ -1,13 +1,25 @@
 #!/usr/bin/env python3
-"""Run one RB3302 graded run: localise from a start square, visit 4 squares.
+"""Run one RB3302 graded run: localise on a start square, visit 4 squares.
 
-Usage (robot_init + planning_rpp or planning_astar already running):
+Usage (robot_init, odom_sign and planning_rpp or planning_astar already running):
 
+    ros2 run course_runner odom_sign
+    ros2 launch planning_rpp planning.launch.py raw_odom_topic:=/odom/raw_signed
     ros2 run course_runner run_course --start S --bearing N --goals A J Q X
     ros2 run course_runner run_course --start S --bearing N --dry-run
     ros2 run course_runner run_course --start S --bearing N --goals A J Q X \
         --avoid P                      # square known to hold the obstacle
-    ros2 run course_runner run_course ... --planner nav2   # previous behaviour
+    ros2 run course_runner run_course ... --localise spin   # old 360 deg spin
+    ros2 run course_runner run_course ... --planner nav2    # FollowWaypoints
+
+Localisation (--localise):
+  still (default)  Send the start pose, then keep the robot still and ask AMCL
+                   for stationary updates (request_nomotion_update) until most
+                   LiDAR points land on mapped walls, then clear the costmaps of
+                   anything drawn while AMCL was settling. No turning, so the
+                   wheel odometry cannot drift during it.
+  spin             One full turn with Spin (the previous behaviour).
+  none             Only the start pose; AMCL settles while driving.
 
 Planners:
   grid (default)  A* over the 24 squares (walls from the L08b brief, plus any
@@ -15,11 +27,15 @@ Planners:
                   through square centres with rounded corners at squares it
                   passes through, and goes straight in to each goal centre. It
                   is sent straight to the RPP controller (FollowPath), so Nav2
-                  does not replan it every second. Before each leg the robot
-                  turns on the spot to the leg heading. If a leg cannot be
-                  driven, it is replanned, and the last resort is Nav2's own
+                  does not replan it every second. While a leg is driven, the
+                  global costmap is checked ahead of the robot: a square that
+                  becomes blocked (the obstacle) stops the leg and the route is
+                  replanned around it. Before each leg the robot turns on the
+                  spot to the leg heading; it first drives forward onto the
+                  centre of the square it stopped on, so that turn happens on
+                  the centre, clear of the walls. The last resort is Nav2's own
                   planner (NavigateToPose).
-  nav2            Nav2 FollowWaypoints with the NavFn A* planner, as before.
+  nav2            Nav2 FollowWaypoints with the NavFn A* planner.
 
 Mission inputs are CLI arguments, not ROS parameters, because the ROS YAML
 parser turns a bare N/Y into a boolean and N is both a square and a bearing.
@@ -32,7 +48,8 @@ Course letters (as in the L08b brief, North up):
         S T U V W X
 
 Grid geometry (map frame) comes from ROS parameters; the defaults match
-student_ws/maps/rb3302_map.yaml, where North is +x and West is +y.
+student_ws/maps/rb3302_map.yaml: +x East, +y North, (0, 0) at the south-west
+corner of the course, 0.5825 m squares, square A centre at (0.291, 2.039).
 """
 
 import argparse
@@ -46,11 +63,14 @@ from action_msgs.msg import GoalStatus
 from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 from nav2_msgs.action import FollowPath, FollowWaypoints, NavigateToPose, Spin
+from nav2_msgs.srv import ClearEntireCostmap
 from nav_msgs.msg import OccupancyGrid, Path
 from rclpy.action import ActionClient
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy
-from std_srvs.srv import Trigger
+from rclpy.qos import (DurabilityPolicy, QoSProfile, ReliabilityPolicy,
+                       qos_profile_sensor_data)
+from sensor_msgs.msg import LaserScan
+from std_srvs.srv import Empty, Trigger
 from visualization_msgs.msg import Marker, MarkerArray
 
 try:
@@ -198,6 +218,73 @@ def rounded_polyline(corners, radius, step):
     return poses
 
 
+def extend_path(poses, length, step):
+    """Carry the path on `length` past its last pose, along its last heading.
+
+    The goal checker succeeds as soon as the robot is within xy_goal_tolerance
+    of the path end, so a path that ends on the square centre leaves the robot
+    that far short of it. Ending the path just past the centre makes the robot
+    stop on it.
+    """
+    if not poses or length <= 0.0:
+        return poses
+    x, y, yaw = poses[-1]
+    n = max(1, int(math.ceil(length / step)))
+    return poses + [(x + length * k / n * math.cos(yaw),
+                     y + length * k / n * math.sin(yaw), yaw)
+                    for k in range(1, n + 1)]
+
+
+def scan_wall_fraction(grid, scan, transform, match_distance, max_range=6.0):
+    """Fraction of LiDAR end points within match_distance of an occupied map cell.
+
+    grid: OccupancyGrid (unrotated origin), scan: LaserScan, transform:
+    (tx, ty, qx, qy, qz, qw) of the scan frame in the grid frame.
+    Returns None when fewer than 20 usable points.
+    """
+    tx, ty, qx, qy, qz, qw = transform
+    # x/y rows of the rotation matrix: the laser frame may be mounted turned over
+    r00 = 1.0 - 2.0 * (qy * qy + qz * qz)
+    r01 = 2.0 * (qx * qy - qz * qw)
+    r10 = 2.0 * (qx * qy + qz * qw)
+    r11 = 1.0 - 2.0 * (qx * qx + qz * qz)
+    info = grid.info
+    res = info.resolution
+    ox, oy = info.origin.position.x, info.origin.position.y
+    width, height = info.width, info.height
+    reach = int(math.ceil(match_distance / res))
+    lo = max(scan.range_min, 0.15)
+    hi = min(scan.range_max, max_range)
+    stride = max(1, len(scan.ranges) // 180)
+    valid = matched = 0
+    for i in range(0, len(scan.ranges), stride):
+        r = scan.ranges[i]
+        if not math.isfinite(r) or not lo <= r <= hi:
+            continue
+        a = scan.angle_min + i * scan.angle_increment
+        lx, ly = r * math.cos(a), r * math.sin(a)
+        wx = tx + r00 * lx + r01 * ly
+        wy = ty + r10 * lx + r11 * ly
+        u = int(math.floor((wx - ox) / res))
+        v = int(math.floor((wy - oy) / res))
+        valid += 1
+        hit = False
+        for vv in range(max(0, v - reach), min(height, v + reach + 1)):
+            for uu in range(max(0, u - reach), min(width, u + reach + 1)):
+                if grid.data[vv * width + uu] >= 65:
+                    cx = ox + (uu + 0.5) * res
+                    cy = oy + (vv + 0.5) * res
+                    if math.hypot(cx - wx, cy - wy) <= match_distance + 0.5 * res:
+                        hit = True
+                        break
+            if hit:
+                break
+        matched += hit
+    if valid < 20:
+        return None
+    return matched / valid
+
+
 def parse_bearing(text):
     """Compass word (N, NE, ...) or degrees clockwise from North."""
     key = text.strip().upper()
@@ -221,25 +308,43 @@ class CourseRunner(Node):
 
     def __init__(self, args):
         super().__init__('course_runner')
+        # geometry of rb3302_map.yaml: +x East, +y North, 0.5825 m squares
         self.declare_parameter('frame_id', 'map')
-        self.declare_parameter('cell_size', 0.60)
-        self.declare_parameter('a_center_x', 1.725)
-        self.declare_parameter('a_center_y', 2.905)
-        self.declare_parameter('north_yaw', 0.0)
+        self.declare_parameter('cell_size', 0.5825)
+        self.declare_parameter('a_center_x', 0.29125)
+        self.declare_parameter('a_center_y', 2.03875)
+        self.declare_parameter('north_yaw', math.pi / 2.0)
+        # AMCL looks a map cell up by rounding to the nearest cell corner, so
+        # its poses come out half a cell (0.0243 m) low in x and y; aiming the
+        # same amount low puts the robot on the real centre (friend A measured
+        # 2.5 cm on the 0.05 m map). Set both to 0.0 to aim at the map centres.
+        self.declare_parameter('aim_offset_x', -0.0243)
+        self.declare_parameter('aim_offset_y', -0.0243)
         self.declare_parameter('xy_stddev', 0.15)
-        self.declare_parameter('yaw_stddev', 0.5)
+        self.declare_parameter('yaw_stddev', 0.6)
         self.declare_parameter('spin_angle', 2.0 * math.pi)
         self.declare_parameter('spin_time_allowance', 25.0)
+        # stand-still localisation (--localise still)
+        self.declare_parameter('localise_match_distance', 0.10)
+        self.declare_parameter('localise_match_fraction', 0.95)
+        self.declare_parameter('localise_max_updates', 50)
+        self.declare_parameter('localise_timeout', 30.0)
         # grid planner
         self.declare_parameter('base_frame', 'base_link')
-        self.declare_parameter('corner_radius', 0.30)
+        self.declare_parameter('corner_radius', 0.29)
         self.declare_parameter('path_step', 0.025)
         self.declare_parameter('turn_penalty', 0.5)
         self.declare_parameter('stop_seconds', 3.5)
         self.declare_parameter('align_min_angle', 0.20)
         self.declare_parameter('align_time_allowance', 10.0)
+        self.declare_parameter('goal_extension', 0.03)
+        self.declare_parameter('centre_tolerance', 0.04)
+        self.declare_parameter('centre_ahead_angle', 1.05)
         self.declare_parameter('blocked_cost', 99)
+        self.declare_parameter('monitor_period', 0.5)
+        self.declare_parameter('monitor_distance', 1.2)
         self.declare_parameter('replan_attempts', 3)
+        self.declare_parameter('server_timeout', 10.0)
         self.declare_parameter('controller_id', 'FollowPath')
         self.declare_parameter('goal_checker_id', 'goal_checker')
 
@@ -249,10 +354,16 @@ class CourseRunner(Node):
         self.a_x = float(param('a_center_x'))
         self.a_y = float(param('a_center_y'))
         self.north_yaw = float(param('north_yaw'))
+        self.aim_dx = float(param('aim_offset_x'))
+        self.aim_dy = float(param('aim_offset_y'))
         self.xy_std = float(param('xy_stddev'))
         self.yaw_std = float(param('yaw_stddev'))
         self.spin_angle = float(param('spin_angle'))
         self.spin_allowance = float(param('spin_time_allowance'))
+        self.match_distance = float(param('localise_match_distance'))
+        self.match_fraction = float(param('localise_match_fraction'))
+        self.localise_max_updates = int(param('localise_max_updates'))
+        self.localise_timeout = float(param('localise_timeout'))
         self.base_frame = str(param('base_frame'))
         self.corner_radius = float(param('corner_radius'))
         self.path_step = float(param('path_step'))
@@ -260,23 +371,39 @@ class CourseRunner(Node):
         self.stop_seconds = float(param('stop_seconds'))
         self.align_min_angle = float(param('align_min_angle'))
         self.align_allowance = float(param('align_time_allowance'))
+        self.goal_extension = float(param('goal_extension'))
+        self.centre_tolerance = float(param('centre_tolerance'))
+        self.centre_ahead_angle = float(param('centre_ahead_angle'))
         self.blocked_cost = int(param('blocked_cost'))
+        self.monitor_period = float(param('monitor_period'))
+        self.monitor_distance = float(param('monitor_distance'))
         self.replan_attempts = int(param('replan_attempts'))
+        self.server_timeout = float(param('server_timeout'))
         self.controller_id = str(param('controller_id'))
         self.goal_checker_id = str(param('goal_checker_id'))
 
         self.start = args.start
         self.bearing_deg = args.bearing
         self.goals = args.goals
-        self.do_spin = not args.no_spin
+        self.localise = args.localise
         self.blocked = set(args.avoid)
         self.preview = []
+        self.stopped_by_monitor = None
 
         self.costmap = None
         # volatile + reliable matches the costmap publisher whatever its durability
         self.create_subscription(
             OccupancyGrid, 'global_costmap/costmap', self._costmap_callback,
             QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE))
+        # the saved map and the LiDAR, for the stand-still localisation check
+        self.map_msg = None
+        self.scan_msg = None
+        self.create_subscription(
+            OccupancyGrid, 'map', self._map_callback,
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                       durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        self.create_subscription(
+            LaserScan, 'scan', self._scan_callback, qos_profile_sensor_data)
         # shown by the existing 'Plan' display (/plan) in navigation.rviz
         self.path_pub = self.create_publisher(Path, 'plan', 10)
         self.follow_path_client = ActionClient(self, FollowPath, 'follow_path')
@@ -292,6 +419,7 @@ class CourseRunner(Node):
             MarkerArray, 'waypoint_markers', 10)
         self.amcl_stamp = None
         self.amcl_msg = None
+        self.amcl_count = 0
         self.create_subscription(
             PoseWithCovarianceStamped, 'amcl_pose', self._amcl_callback, 10)
         self.waypoint_client = ActionClient(
@@ -301,22 +429,28 @@ class CourseRunner(Node):
         # map->odom, i.e. after the initial pose; this service says when it is done.
         self.nav_active_client = self.create_client(
             Trigger, 'lifecycle_manager_navigation/is_active')
+        self.nomotion_client = self.create_client(Empty, 'request_nomotion_update')
+        self.clear_clients = [
+            self.create_client(ClearEntireCostmap, name) for name in (
+                'global_costmap/clear_entirely_global_costmap',
+                'local_costmap/clear_entirely_local_costmap')]
         self.create_timer(1.0, self.publish_markers)
 
     # ------------------------------------------------------------ geometry
     def square_center(self, letter):
+        """Where to send the robot for letter (map frame, incl. aim offset)."""
         row, col = divmod(LETTERS.index(letter), COLS)
         theta = self.north_yaw
         north = (math.cos(theta), math.sin(theta))
         east = (math.sin(theta), -math.cos(theta))
         x = self.a_x + col * self.cell * east[0] - row * self.cell * north[0]
         y = self.a_y + col * self.cell * east[1] - row * self.cell * north[1]
-        return x, y
+        return x + self.aim_dx, y + self.aim_dy
 
     def cell_of(self, x, y):
         """Letter of the square containing map point (x, y), or None."""
         theta = self.north_yaw
-        dx, dy = x - self.a_x, y - self.a_y
+        dx, dy = x - self.aim_dx - self.a_x, y - self.aim_dy - self.a_y
         east = dx * math.sin(theta) - dy * math.cos(theta)
         south = -(dx * math.cos(theta) + dy * math.sin(theta))
         row, col = int(round(south / self.cell)), int(round(east / self.cell))
@@ -397,8 +531,8 @@ class CourseRunner(Node):
                 disc.action = Marker.ADD
                 disc.pose.position.x, disc.pose.position.y = x, y
                 disc.pose.orientation.w = 1.0
-                # diameter = 2 x goal tolerance region shown for reference
-                disc.scale.x = disc.scale.y = 0.12
+                # diameter = 2 x centre tolerance region shown for reference
+                disc.scale.x = disc.scale.y = 0.08
                 disc.scale.z = 0.01
                 is_start = letter == self.start and letter not in order
                 disc.color.r = 0.1 if is_start else 1.0
@@ -414,6 +548,13 @@ class CourseRunner(Node):
     def _amcl_callback(self, msg):
         self.amcl_msg = msg
         self.amcl_stamp = time.monotonic()
+        self.amcl_count += 1
+
+    def _map_callback(self, msg):
+        self.map_msg = msg
+
+    def _scan_callback(self, msg):
+        self.scan_msg = msg
 
     def set_initial_pose(self, attempts=10):
         x, y = self.square_center(self.start)
@@ -481,18 +622,118 @@ class CourseRunner(Node):
             'output in the planning terminal' % timeout)
         return False
 
+    def scan_match(self):
+        """Fraction of the latest scan's points on mapped walls, or None."""
+        if self.map_msg is None or self.scan_msg is None or self.tf_buffer is None:
+            return None
+        frame = self.map_msg.header.frame_id or self.frame_id
+        try:
+            # the robot is standing still, so the latest transform will do
+            t = self.tf_buffer.lookup_transform(
+                frame, self.scan_msg.header.frame_id, Time())
+        except TF_ERRORS:
+            return None
+        tr, q = t.transform.translation, t.transform.rotation
+        return scan_wall_fraction(
+            self.map_msg, self.scan_msg, (tr.x, tr.y, q.x, q.y, q.z, q.w),
+            self.match_distance)
+
+    def localise_still(self):
+        """Converge AMCL without moving the robot.
+
+        Each request_nomotion_update makes AMCL run one LiDAR update although
+        the robot has not moved. Repeat until localise_match_fraction of the
+        scan points lie within localise_match_distance of a mapped wall (or
+        localise_max_updates / localise_timeout), then clear the costmaps.
+        """
+        if not self.nomotion_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().warn(
+                'request_nomotion_update not available, AMCL will settle while driving')
+            return False
+        start = time.monotonic()
+        fraction = None
+        updates = 0
+        while updates < self.localise_max_updates \
+                and time.monotonic() - start < self.localise_timeout:
+            before = self.amcl_count
+            future = self.nomotion_client.call_async(Empty.Request())
+            rclpy.spin_until_future_complete(self, future, timeout_sec=2.0)
+            # AMCL publishes /amcl_pose after the LiDAR update it was asked for
+            deadline = time.monotonic() + 2.0
+            while self.amcl_count == before and time.monotonic() < deadline:
+                rclpy.spin_once(self, timeout_sec=0.05)
+            if self.amcl_count == before:
+                continue
+            updates += 1
+            fraction = self.scan_match()
+            if fraction is not None and fraction >= self.match_fraction:
+                break
+            if updates % 10 == 0:
+                self.get_logger().info(
+                    'localising: %d updates, scan on walls %s'
+                    % (updates, 'n/a' if fraction is None else '%.0f %%' % (100 * fraction)))
+        ok = fraction is not None and fraction >= self.match_fraction
+        text = 'n/a (check /map, /scan, TF)' if fraction is None else '%.0f %%' % (100 * fraction)
+        if ok:
+            self.get_logger().info(
+                'localised standing still: %d updates in %.1f s, scan on walls %s'
+                % (updates, time.monotonic() - start, text))
+        else:
+            self.get_logger().warn(
+                'still localisation stopped after %d updates (%.1f s), scan on walls %s; '
+                'check the start square and bearing in RViz'
+                % (updates, time.monotonic() - start, text))
+        self.log_amcl_spread('after still localisation')
+        self.clear_costmaps()
+        return ok
+
+    def clear_costmaps(self):
+        """Forget obstacle marks drawn while AMCL was still settling."""
+        for client in self.clear_clients:
+            if client.wait_for_service(timeout_sec=1.0):
+                future = client.call_async(ClearEntireCostmap.Request())
+                rclpy.spin_until_future_complete(self, future, timeout_sec=2.0)
+        # let the costmaps refill from the current scan
+        self.pause(0.5)
+
     # ------------------------------------------------------------- actions
-    def _send(self, client, goal, name, feedback_cb=None, retries=10):
-        """Send an action goal, retrying while Nav2 is still activating."""
+    def _send(self, client, goal, name, feedback_cb=None, retries=10, monitor=None):
+        """Send an action goal, retrying while Nav2 is still activating.
+
+        monitor: optional callable checked every monitor_period while the goal
+        runs; when it returns something truthy the goal is cancelled and that
+        value is kept in self.stopped_by_monitor.
+        """
         self.get_logger().info('waiting for %s action server ...' % name)
-        client.wait_for_server()
+        if not client.wait_for_server(timeout_sec=self.server_timeout):
+            self.get_logger().error(
+                '%s action server not available after %.0f s'
+                % (name, self.server_timeout))
+            return None
         for _ in range(retries):
             future = client.send_goal_async(goal, feedback_callback=feedback_cb)
             rclpy.spin_until_future_complete(self, future)
             handle = future.result()
             if handle is not None and handle.accepted:
                 result_future = handle.get_result_async()
-                rclpy.spin_until_future_complete(self, result_future)
+                if monitor is None:
+                    rclpy.spin_until_future_complete(self, result_future)
+                    return result_future.result()
+                next_check = time.monotonic() + self.monitor_period
+                while not result_future.done():
+                    rclpy.spin_once(self, timeout_sec=0.05)
+                    if time.monotonic() < next_check:
+                        continue
+                    next_check = time.monotonic() + self.monitor_period
+                    reason = monitor()
+                    if reason:
+                        self.stopped_by_monitor = reason
+                        cancel = handle.cancel_goal_async()
+                        rclpy.spin_until_future_complete(self, cancel, timeout_sec=2.0)
+                        end = time.monotonic() + 3.0
+                        while not result_future.done() and time.monotonic() < end:
+                            rclpy.spin_once(self, timeout_sec=0.05)
+                        return result_future.result() if result_future.done() else None
                 return result_future.result()
             self.get_logger().warn('%s goal rejected, retrying in 2 s' % name)
             end = time.monotonic() + 2.0
@@ -588,7 +829,8 @@ class CourseRunner(Node):
 
     def leg_poses(self, route):
         corners = [self.square_center(letter) for letter in route]
-        return rounded_polyline(corners, self.corner_radius, self.path_step)
+        poses = rounded_polyline(corners, self.corner_radius, self.path_step)
+        return extend_path(poses, self.goal_extension, self.path_step)
 
     def plan_leg(self, here, goal):
         """Grid route here -> goal and its path, avoiding blocked squares."""
@@ -598,7 +840,18 @@ class CourseRunner(Node):
                 self.get_logger().warn(
                     'no grid route %s -> %s avoiding %s'
                     % (here, goal, ','.join(sorted(self.blocked)) or '-'))
-                return None, None
+                if not self.blocked:
+                    return None, None
+                # A false mark (e.g. on D, the only way out of dead-end J)
+                # must not trap the robot: forget the blocked squares and use
+                # the walls only. The leg monitor and RPP collision detection
+                # still stop the robot if the square really is blocked.
+                self.get_logger().warn('forgetting blocked squares, walls only')
+                self.blocked.clear()
+                route = grid_astar(here, goal, (), self.turn_penalty)
+                if route is None:
+                    return None, None
+                return route, self.leg_poses(route)
             poses = self.leg_poses(route)
             bad = self.first_blocked_square(poses, ignore={here, goal})
             if bad is None:
@@ -633,12 +886,53 @@ class CourseRunner(Node):
         if result is None or result.status != GoalStatus.STATUS_SUCCEEDED:
             self.get_logger().warn('turn onto the leg did not finish, RPP will correct')
 
-    def follow_path(self, poses):
+    def path_monitor(self, poses, goal):
+        """Callable for _send: the first square ahead of the robot (within
+        monitor_distance along the path) that the global costmap now shows as
+        blocked, seen on two checks in a row; None while the way is clear."""
+        state = {'index': 0, 'seen': {}}
+
+        def check():
+            pose = self.robot_pose()
+            if pose is None or self.costmap is None:
+                return None
+            first = state['index']
+            best, best_d = first, math.inf
+            for k in range(first, min(len(poses), first + 80)):
+                d = math.hypot(poses[k][0] - pose[0], poses[k][1] - pose[1])
+                if d < best_d:
+                    best, best_d = k, d
+            state['index'] = best
+            here = self.cell_of(pose[0], pose[1])
+            travelled = 0.0
+            for k in range(best, len(poses)):
+                if k > best:
+                    travelled += math.hypot(poses[k][0] - poses[k - 1][0],
+                                            poses[k][1] - poses[k - 1][1])
+                if travelled > self.monitor_distance:
+                    break
+                value = self.costmap_value(poses[k][0], poses[k][1])
+                if value is None or value < self.blocked_cost:
+                    continue
+                letter = self.cell_of(poses[k][0], poses[k][1])
+                if letter is None or letter in (here, goal):
+                    continue
+                state['seen'][letter] = state['seen'].get(letter, 0) + 1
+                if state['seen'][letter] >= 2:
+                    return letter
+                return None
+            state['seen'].clear()
+            return None
+
+        return check
+
+    def follow_path(self, poses, monitor=None):
         goal = FollowPath.Goal()
         goal.path = self.make_path(poses)
         goal.controller_id = self.controller_id
         goal.goal_checker_id = self.goal_checker_id
-        result = self._send(self.follow_path_client, goal, 'follow_path')
+        self.stopped_by_monitor = None
+        result = self._send(self.follow_path_client, goal, 'follow_path', monitor=monitor)
         return result is not None and result.status == GoalStatus.STATUS_SUCCEEDED
 
     def navigate_to(self, letter):
@@ -663,16 +957,51 @@ class CourseRunner(Node):
                 'route %s (attempt %d)' % (' -> '.join(route), attempt))
             self.publish_path(poses)
             self.turn_to(poses[0][2])
-            if self.follow_path(poses):
+            if self.follow_path(poses, monitor=self.path_monitor(poses, goal)):
                 return True
-            self.get_logger().warn('follow_path %s -> %s failed' % (here, goal))
-            # give the costmap a moment to mark whatever stopped the robot
-            self.pause(1.5)
+            blocked = self.stopped_by_monitor
+            if blocked:
+                self.get_logger().warn(
+                    'square %s became blocked ahead, replanning around it' % blocked)
+                self.blocked.add(blocked)
+                self.pause(0.5)
+            else:
+                self.get_logger().warn('follow_path %s -> %s failed' % (here, goal))
+                # give the costmap a moment to mark whatever stopped the robot
+                self.pause(1.5)
             pose = self.robot_pose()
             if pose is not None:
                 here = self.cell_of(pose[0], pose[1]) or here
         self.get_logger().warn('using the Nav2 planner for %s' % goal)
         return self.navigate_to(goal)
+
+    def centre_on(self, letter):
+        """If the robot stopped more than centre_tolerance from the centre of
+        letter and the centre is ahead of it (within centre_ahead_angle), drive
+        forward onto it once. Scoring needs the robot over the label, and the
+        next leg's turn on the spot must happen on the centre, clear of the
+        walls. Never turns round: a centre behind the robot is left alone."""
+        pose = self.robot_pose()
+        if pose is None:
+            return
+        x, y = self.square_center(letter)
+        error = math.hypot(x - pose[0], y - pose[1])
+        if error <= self.centre_tolerance:
+            return
+        bearing = math.atan2(y - pose[1], x - pose[0])
+        off = abs(wrap_angle(bearing - pose[2]))
+        if off > self.centre_ahead_angle:
+            self.get_logger().info(
+                '%.0f mm from the centre of %s, but it is %.0f deg off the heading; '
+                'not turning round' % (1000.0 * error, letter, math.degrees(off)))
+            return
+        self.get_logger().info(
+            '%.0f mm from the centre of %s, driving forward onto it' % (1000.0 * error, letter))
+        poses = extend_path(
+            rounded_polyline([(pose[0], pose[1]), (x, y)], 0.0, self.path_step),
+            self.goal_extension, self.path_step)
+        if not self.follow_path(poses):
+            self.get_logger().warn('could not drive onto the centre of %s' % letter)
 
     def log_stop_error(self, letter):
         pose = self.robot_pose()
@@ -689,14 +1018,19 @@ class CourseRunner(Node):
         here = self.start
         for i, goal in enumerate(self.goals, 1):
             self.get_logger().info('heading to %d/%d: %s' % (i, len(self.goals), goal))
-            if self.drive_leg(here, goal):
+            reached = self.drive_leg(here, goal)
+            pose = self.robot_pose()
+            if not reached and pose is not None and self.cell_of(pose[0], pose[1]) == goal:
+                self.get_logger().warn('leg failed but the robot is in %s' % goal)
+                reached = True
+            if reached:
+                self.centre_on(goal)
                 self.log_stop_error(goal)
                 here = goal
                 self.pause(self.stop_seconds)
                 continue
             self.get_logger().error('could not reach %s' % goal)
             missed.append(goal)
-            pose = self.robot_pose()
             if pose is not None:
                 here = self.cell_of(pose[0], pose[1]) or here
         if missed:
@@ -725,8 +1059,11 @@ def parse_args(argv):
                         help='rough start heading: N/E/S/W/NE/... or degrees')
     parser.add_argument('--goals', nargs='+', type=parse_letter, default=[],
                         help='squares to visit in order, e.g. A J Q X')
-    parser.add_argument('--no-spin', action='store_true',
-                        help='skip the in-place spin used to converge AMCL')
+    parser.add_argument('--localise', choices=('still', 'spin', 'none'), default='still',
+                        help='still: AMCL updates standing still (default); '
+                             'spin: one 360 deg turn; none: start pose only')
+    parser.add_argument('--no-spin', dest='localise', action='store_const', const='none',
+                        help='same as --localise none (kept for old commands)')
     parser.add_argument('--planner', choices=('grid', 'nav2'), default='grid',
                         help='grid: square-centre route with rounded corners '
                              '(default); nav2: FollowWaypoints + NavFn A*')
@@ -760,9 +1097,12 @@ def main(argv=None):
             return
         if not node.wait_for_nav_active():
             return
-        if node.do_spin:
+        if args.localise == 'still':
+            node.localise_still()
+        elif args.localise == 'spin':
             node.localisation_spin()
             node.log_amcl_spread('after spin')
+            node.clear_costmaps()
         t1 = time.monotonic()
         if args.planner == 'grid':
             ok = node.run_grid()
