@@ -141,8 +141,18 @@ ros2 run course_runner run_course --start S --bearing N --goals A J Q X
 ```
 
 The node sets the AMCL initial pose from the start square (no RViz click
-needed), spins once in place to converge AMCL, then sends the squares to
-Nav2's waypoint follower, which stops 3.5 s on each square.
+needed), spins once in place to converge AMCL, then drives to each square and
+stops 3.5 s on it.
+
+By default (`--planner grid`) each leg is planned with A* over the 24 squares
+(walls from the L08b brief, plus squares the global costmap shows as blocked).
+The route goes through square centres, rounds the corner (0.30 m arc) in any
+square it only passes through, and goes straight in to the goal centre. The
+path is sent straight to the RPP controller (`follow_path`) and shown on
+`/plan`. The robot turns on the spot onto each leg first. If a leg fails it is
+replanned, and the last resort is Nav2's planner (`navigate_to_pose`). If you
+know which square holds the obstacle, add `--avoid P`. To use the previous
+behaviour (Nav2 waypoint follower with NavFn A*), add `--planner nav2`.
 
 Check the square letters line up with the map before a run (RViz on the
 laptop, `WaypointMarkers` display, topic `/waypoint_markers`):
