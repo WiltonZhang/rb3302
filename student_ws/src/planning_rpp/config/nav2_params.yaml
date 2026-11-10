@@ -75,21 +75,22 @@ controller_server:
     goal_checker:
       plugin: nav2_controller::SimpleGoalChecker
       # Scoring needs the robot inside the square AND over the centre label.
-      xy_goal_tolerance: 0.03
+      # 0.04 (116bdf3): course_runner ends each path goal_extension (0.03)
+      # past the centre, so the robot still stops on it; 0.03 made it shuffle.
+      xy_goal_tolerance: 0.04
       # Orientation is not scored -> do not waste time turning at each square.
       yaw_goal_tolerance: 3.14
       stateful: true
     FollowPath:
       plugin: nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController
       desired_linear_vel: 0.18
-      # Short lookahead so the carrot does not cut 90 deg corners into walls.
-      # 0.20 also keeps the steady heading error on the 0.30 m corner arcs of
-      # course_runner's grid path below rotate_to_heading_min_angle.
-      # 0.20 -> 0.15: carrot closer, so the robot centre stays nearer the path
-      # (sim: half-rate turning, mean cross-track 3.1 -> 2.2 cm, worst 8.0 -> 5.1 cm)
-      lookahead_dist: 0.15
-      min_lookahead_dist: 0.10
-      max_lookahead_dist: 0.25
+      # course_runner sends straight runs between square centres (turns are
+      # done on the spot by Spin), so the carrot never cuts a corner. 0.20
+      # (116bdf3): 0.15 turned every 2-3 cm AMCL correction into a sharp
+      # steer and the robot zigzagged.
+      lookahead_dist: 0.20
+      min_lookahead_dist: 0.15
+      max_lookahead_dist: 0.35
       lookahead_time: 1.5
       use_velocity_scaled_lookahead_dist: false
       # 4WD skid-steer only turns at ~1/3 of the commanded rate (360 deg spin took 18 s at 1.0).
@@ -120,8 +121,10 @@ controller_server:
       # sideways (6 cm at 0.25 m lookahead is 14 deg), and then it overshot.
       # 45 deg lets RPP steer through small errors and the grid path's arcs
       # while driving; turns at the start of a leg are done by Spin.
-      # 0.785 -> 0.5: turn on the spot instead of swinging wide off the path
-      rotate_to_heading_min_angle: 0.5
+      # 0.785 (116bdf3): Spin lines the robot up before each straight run, so
+      # RPP should only steer; 0.5 kept stopping it to turn at full speed with
+      # no slow-down, which overshot and made it zigzag.
+      rotate_to_heading_min_angle: 0.785
       # RPP limits each in-place turn command to measured rate + accel*dt.
       # At 2.0 that is 0.1 rad/s from standstill, too little to beat tyre scrub,
       # so the robot never starts turning. Smoothing is left to velocity_smoother.

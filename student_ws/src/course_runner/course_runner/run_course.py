@@ -11,14 +11,17 @@ Usage (robot_init + planning_rpp or planning_astar already running):
 
 Planners:
   grid (default)  A* over the 24 squares (walls from the L08b brief, plus any
-                  square the global costmap shows as blocked). The route runs
-                  through square centres with rounded corners at squares it
-                  passes through, and goes straight in to each goal centre. It
-                  is sent straight to the RPP controller (FollowPath), so Nav2
-                  does not replan it every second. Before each leg the robot
-                  turns on the spot to the leg heading. If a leg cannot be
-                  driven, it is replanned, and the last resort is Nav2's own
-                  planner (NavigateToPose).
+                  square the global costmap shows as blocked). The route is
+                  driven as straight runs from square centre to square centre:
+                  at every square where it turns (and at each goal) the robot
+                  stops on the centre and turns on the spot (Spin), then the
+                  RPP controller (FollowPath) follows a dead-straight line, so
+                  Nav2 does not replan it every second. corner_radius > 0
+                  rounds the corners instead (one path per leg). If a leg
+                  cannot be driven, it is replanned, and the last resort is
+                  Nav2's own planner (NavigateToPose). A robot that stops more
+                  than centre_tolerance off a goal centre makes one straight
+                  correction onto it.
   nav2            Nav2 FollowWaypoints with the NavFn A* planner, as before.
 
 Mission inputs are CLI arguments, not ROS parameters, because the ROS YAML
@@ -171,7 +174,7 @@ def rounded_polyline(corners, radius, step):
         cross = u_in[0] * u_out[1] - u_in[1] * u_out[0]
         dot = u_in[0] * u_out[0] + u_in[1] * u_out[1]
         turn = math.atan2(cross, dot)  # +left / -right
-        if abs(turn) < 1e-3 or abs(abs(turn) - math.pi) < 1e-3:
+        if radius <= 0.0 or abs(turn) < 1e-3 or abs(abs(turn) - math.pi) < 1e-3:
             line_to((x1, y1))
             continue
         # tangent length, capped at half of either neighbouring segment
@@ -196,6 +199,44 @@ def rounded_polyline(corners, radius, step):
             yaw = math.atan2(ny - y, nx - x)
         poses.append((x, y, yaw))
     return poses
+
+
+def straight_runs(route):
+    """Split a square route into straight runs that share their corner squares.
+
+    ['X', 'W', 'V', 'P', 'J'] -> [['X', 'W', 'V'], ['V', 'P', 'J']]
+    """
+    if len(route) < 2:
+        return [route]
+    runs, run, step = [], [route[0]], None
+    for prev, cur in zip(route, route[1:]):
+        r0, c0 = divmod(LETTERS.index(prev), COLS)
+        r1, c1 = divmod(LETTERS.index(cur), COLS)
+        move = (r1 - r0, c1 - c0)
+        if step is not None and move != step:
+            runs.append(run)
+            run = [prev]
+        run.append(cur)
+        step = move
+    runs.append(run)
+    return runs
+
+
+def extend_path(poses, length, step):
+    """Carry the path on `length` past its last pose, along its last heading.
+
+    The goal checker succeeds as soon as the robot is within xy_goal_tolerance
+    of the path end, so a path that ends on the square centre leaves the robot
+    that far short of it. Ending the path just past the centre makes the robot
+    stop on it.
+    """
+    if not poses or length <= 0.0:
+        return poses
+    x, y, yaw = poses[-1]
+    n = max(1, int(math.ceil(length / step)))
+    return poses + [(x + length * k / n * math.cos(yaw),
+                     y + length * k / n * math.sin(yaw), yaw)
+                    for k in range(1, n + 1)]
 
 
 def parse_bearing(text):
@@ -232,9 +273,11 @@ class CourseRunner(Node):
         self.declare_parameter('spin_time_allowance', 25.0)
         # grid planner
         self.declare_parameter('base_frame', 'base_link')
-        self.declare_parameter('corner_radius', 0.30)
+        self.declare_parameter('corner_radius', 0.0)
         self.declare_parameter('path_step', 0.025)
-        self.declare_parameter('turn_penalty', 0.5)
+        self.declare_parameter('turn_penalty', 1.0)
+        self.declare_parameter('goal_extension', 0.03)
+        self.declare_parameter('centre_tolerance', 0.05)
         self.declare_parameter('stop_seconds', 3.5)
         self.declare_parameter('align_min_angle', 0.20)
         self.declare_parameter('align_time_allowance', 10.0)
@@ -257,6 +300,8 @@ class CourseRunner(Node):
         self.corner_radius = float(param('corner_radius'))
         self.path_step = float(param('path_step'))
         self.turn_penalty = float(param('turn_penalty'))
+        self.goal_extension = float(param('goal_extension'))
+        self.centre_tolerance = float(param('centre_tolerance'))
         self.stop_seconds = float(param('stop_seconds'))
         self.align_min_angle = float(param('align_min_angle'))
         self.align_allowance = float(param('align_time_allowance'))
@@ -636,7 +681,7 @@ class CourseRunner(Node):
         delta = wrap_angle(target_yaw - pose[2])
         if abs(delta) < self.align_min_angle:
             return
-        self.get_logger().info('turning %.0f deg onto the leg' % math.degrees(delta))
+        self.get_logger().info('turning %.0f deg on the spot' % math.degrees(delta))
         goal = Spin.Goal()
         goal.target_yaw = delta
         goal.time_allowance = Duration(sec=int(self.align_allowance))
@@ -662,21 +707,53 @@ class CourseRunner(Node):
         result = self._send(self.navigate_client, goal, 'navigate_to_pose')
         return result is not None and result.status == GoalStatus.STATUS_SUCCEEDED
 
+    def drive_route(self, route, poses):
+        """Drive a planned route. Returns (reached, last square reached).
+
+        corner_radius 0: one straight run at a time. Before each run the robot
+        turns on the spot (Spin, which slows down before the target) onto the
+        run's compass direction, then RPP follows a dead-straight line to the
+        next square where the route turns, or to the goal, and stops on its
+        centre. RPP never has to track an arc, which this skid-steer cannot do
+        without lagging and stopping to turn. corner_radius > 0: the rounded
+        path is sent in one go.
+        """
+        if self.corner_radius > 0.0:
+            self.turn_to(poses[0][2])
+            ok = self.follow_path(
+                extend_path(poses, self.goal_extension, self.path_step))
+            return ok, route[-1] if ok else route[0]
+        reached = route[0]
+        for run in straight_runs(route):
+            corners = [self.square_center(letter) for letter in run]
+            run_poses = extend_path(
+                rounded_polyline(corners, 0.0, self.path_step),
+                self.goal_extension, self.path_step)
+            self.get_logger().info('straight run %s' % ' -> '.join(run))
+            self.turn_to(run_poses[0][2])
+            if not self.follow_path(run_poses):
+                return False, reached
+            reached = run[-1]
+        return True, reached
+
     def drive_leg(self, here, goal):
         """Drive from square `here` to the centre of `goal`. True if reached."""
         for attempt in range(1, self.replan_attempts + 1):
             if here == goal:
-                break
+                # stopped inside the goal square but short of the centre:
+                # run_grid drives straight onto it (centre_on)
+                return False
             route, poses = self.plan_leg(here, goal)
             if route is None:
                 break
             self.get_logger().info(
                 'route %s (attempt %d)' % (' -> '.join(route), attempt))
             self.publish_path(poses)
-            self.turn_to(poses[0][2])
-            if self.follow_path(poses):
+            ok, reached = self.drive_route(route, poses)
+            if ok:
                 return True
-            self.get_logger().warn('follow_path %s -> %s failed' % (here, goal))
+            self.get_logger().warn('follow_path %s -> %s failed after reaching %s'
+                                   % (here, goal, reached))
             # give the costmap a moment to mark whatever stopped the robot
             self.pause(1.5)
             pose = self.robot_pose()
@@ -695,12 +772,42 @@ class CourseRunner(Node):
             % (1000.0 * math.hypot(pose[0] - x, pose[1] - y), letter,
                pose[0] - x, pose[1] - y))
 
+    def centre_on(self, letter):
+        """If the robot stopped more than centre_tolerance from the centre of
+        letter, turn on the spot towards the centre and drive straight onto it
+        (once). Scoring needs the robot over the label, and the next leg's
+        turn on the spot needs it clear of the walls."""
+        pose = self.robot_pose()
+        if pose is None:
+            return
+        x, y = self.square_center(letter)
+        error = math.hypot(x - pose[0], y - pose[1])
+        if error <= self.centre_tolerance:
+            return
+        self.get_logger().info(
+            '%.0f mm from the centre of %s, driving onto it' % (1000.0 * error, letter))
+        poses = extend_path(
+            rounded_polyline([(pose[0], pose[1]), (x, y)], 0.0, self.path_step),
+            self.goal_extension, self.path_step)
+        self.turn_to(poses[0][2])
+        if not self.follow_path(poses):
+            self.get_logger().warn('could not drive onto the centre of %s' % letter)
+
     def run_grid(self):
         missed = []
         here = self.start
         for i, goal in enumerate(self.goals, 1):
             self.get_logger().info('heading to %d/%d: %s' % (i, len(self.goals), goal))
-            if self.drive_leg(here, goal):
+            reached = self.drive_leg(here, goal)
+            pose = self.robot_pose()
+            if not reached and pose is not None \
+                    and self.cell_of(pose[0], pose[1]) == goal:
+                # the leg did not finish, but the robot is in the goal square:
+                # finish it here rather than leave for the next goal.
+                self.get_logger().warn('leg ended inside %s, centring on it' % goal)
+                reached = True
+            if reached:
+                self.centre_on(goal)
                 self.log_stop_error(goal)
                 here = goal
                 self.pause(self.stop_seconds)
@@ -739,8 +846,9 @@ def parse_args(argv):
     parser.add_argument('--no-spin', action='store_true',
                         help='skip the in-place spin used to converge AMCL')
     parser.add_argument('--planner', choices=('grid', 'nav2'), default='grid',
-                        help='grid: square-centre route with rounded corners '
-                             '(default); nav2: FollowWaypoints + NavFn A*')
+                        help='grid: straight runs between square centres, '
+                             'turning on the spot at corners (default); '
+                             'nav2: FollowWaypoints + NavFn A*')
     parser.add_argument('--avoid', nargs='+', type=parse_letter, default=[],
                         help='squares to route around (e.g. the obstacle square)')
     parser.add_argument('--dry-run', action='store_true',

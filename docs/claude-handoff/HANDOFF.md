@@ -242,3 +242,55 @@ been tested on the robot yet.**
 7. The owner had uncommitted `cartographer.lua` edits (`use_landmarks = true`, lower
    `min_score`) in the original zip. These are now on `main` via the upload. Don't touch them
    unless asked.
+
+## 7. Second session (10 Nov 2026): field tests and the final version
+
+Section 5 above is the state at `f0715ab`. This section supersedes it.
+
+### 7.1 What each version did on the robot (owner's reports)
+
+| Commit | Change | Result |
+|---|---|---|
+| `57727f1` / `116bdf3` | grid routes through square centres, 0.30 m rounded corners, Spin before each leg; RPP lookahead 0.20, 0.22 m/s, rotate threshold 0.785, xy tolerance 0.04 | "the robot is able to run now"; legs still start at an angle |
+| `c2bb18f`, `04af912` | 0.62 m squares, slower, smoother corners | spun in circles, AMCL lost (std 0.4-0.56 m); reverted |
+| `a83d169`, `138f0bd`, `9a9a137` | align 0.08 rad, padding 0.02, LiDAR centring | X->V `follow_path` failed after 25 s, then hung waiting for `navigate_to_pose`; reverted |
+| `d797775` | strict straight runs + 3 s server timeout | reverted to `116bdf3` before a run was reported |
+| `7f6eeaf` | lookahead 0.15, 0.18 m/s, rotate threshold 0.5, xy tolerance 0.03 | "this run went almost perfectly well", but kept correcting its heading |
+| `3023d14`, `dbacc72`, `479a950` | turn speeds cut to 80 % and lower, Spin braking 2.0 | over-turned, then hesitant: stalled and aborted spins, 48-55 s legs |
+| `184341e` + `e47eaf1` | local costmap 0.025, lookahead 0.20; dead-end fallback | "a lot more hesitant ... skids a bit forward" |
+| `c3c04d6` | `7f6eeaf` values + dead-end fallback | owner's persistent problems: zigzag on straights, stops short of the centre and moves on, corners oscillate into the walls |
+
+Lowering the turn speeds below the `116bdf3` values made things worse every time: near tyre-scrub
+the skid-steer stalls, Spin aborts and the run hesitates. Keep turn speeds at the `116bdf3` values.
+
+### 7.2 Findings
+- **Arcs cannot be tracked by this base.** It turns at about 1/3-1/2 of the commanded rate, so to
+  follow a 0.30 m corner arc RPP has to lag 40-55 deg behind it. That crosses
+  `rotate_to_heading_min_angle`, RPP stops to turn at full speed with no slow-down, overshoots,
+  and repeats. Simulated with `7f6eeaf` values: 8-13 in-place turns per corner and up to 16.5 cm
+  off the path; on the map a robot 11 cm wide of a 0.30 m arc touches the wall.
+- **Zigzag on straights:** lookahead 0.15 turns each 2-3 cm AMCL correction into a sharp steer,
+  and threshold 0.5 rad lets those become stop-and-turn events.
+- **Stopping short:** the goal checker succeeds on entering the xy tolerance circle, so a path
+  ending on the centre always leaves the robot that far short (3-4 cm), plus coasting and AMCL.
+- **Map:** the owner's original rough map and `rb3302_map.pgm` agree to within half a pixel
+  (2.5 cm); outer size 3.65 x 2.45 m matches 6 x 4 squares of 0.60 m. Not a grid problem.
+
+### 7.3 Final version
+- `course_runner` drives each leg as **straight runs** between square centres. At every square
+  where the route turns, and at each goal, the robot stops on the centre and **turns on the spot
+  with Spin** (closed loop on odometry, slows before the target), then RPP follows a dead-straight
+  line. `corner_radius: 0.0` selects this; `0.30` brings back rounded corners.
+- Every path ends `goal_extension` (0.03 m) past the centre, so with `xy_goal_tolerance` 0.04 the
+  robot stops on the centre instead of 4 cm short.
+- If the robot still ends more than `centre_tolerance` (0.05 m) from a goal centre, or the leg
+  failed but the robot is inside the goal square, it turns towards the centre and drives onto it
+  once before the 3.5 s stop, instead of moving on.
+- A* `turn_penalty` 1.0: a corner now costs a stop and a turn, about one square of driving.
+- `nav2_params.yaml` (rpp and astar identical) = `116bdf3` values except `desired_linear_vel`
+  0.18 from `7f6eeaf`. RPP lookahead 0.20 (0.15-0.35), rotate threshold 0.785 at 1.5 rad/s,
+  xy tolerance 0.04; Spin 1.8 / 0.6 / 4.0; smoother angular +/-2.8.
+- Offline checks: all 552 routes split into compass-straight runs; on the map the robot keeps
+  11 cm from the walls 4.5 cm off a straight line and 6.6 cm when turning on the spot 5 cm off a
+  centre. Estimated run times 110-178 s; if a long mission gets close to 3 min, raise
+  `desired_linear_vel` to 0.22 (the `116bdf3` value).
