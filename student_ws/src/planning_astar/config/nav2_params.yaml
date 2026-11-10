@@ -97,9 +97,9 @@ controller_server:
       # 2.5 overshot every turn (RPP has no slow-down near the target heading),
       # so it is back to 1.5. Big turns are done by Spin in course_runner,
       # which does slow down; this is only the fallback.
-      # 1.2 -> 1.0: RPP turns at full speed until the error is below
+      # 1.2 -> 1.0 -> 0.8: RPP turns at full speed until the error is below
       # rotate_to_heading_min_angle, so a lower speed overshoots less.
-      rotate_to_heading_angular_vel: 1.0
+      rotate_to_heading_angular_vel: 0.8
       transform_tolerance: 0.2
       min_approach_linear_velocity: 0.08
       approach_velocity_scaling_dist: 0.20
@@ -251,7 +251,8 @@ behavior_server:
     simulate_ahead_time: 1.0
     # Spin slows down as it nears the target; 1.8 cap keeps the 90 deg leg
     # turns from overshooting (2.5 overshot).
-    max_rotational_vel: 1.44
+    # 1.44 -> 1.15: rear wheels swung too far on each turn
+    max_rotational_vel: 1.15
     min_rotational_vel: 0.6
     # 4.0 -> 2.0: start slowing ~30 deg before the target instead of ~15 deg
     rotational_acc_lim: 2.0
@@ -263,8 +264,8 @@ velocity_smoother:
     feedback: OPEN_LOOP
     # Driver (driver.launch.py) clamps at 0.8 m/s / 3.0 rad/s. Linear kept low for the 60 cm grid;
     # angular at the clamp because skid-steer turns at ~1/3 of the command.
-    max_velocity: [0.25, 0.0, 2.24]
-    min_velocity: [-0.25, 0.0, -2.24]
+    max_velocity: [0.25, 0.0, 1.8]
+    min_velocity: [-0.25, 0.0, -1.8]
     max_accel: [0.6, 0.0, 6.0]
     # Angular decel -10: stop a turn quickly once RPP ends it, so less overshoot.
     max_decel: [-0.6, 0.0, -10.0]
