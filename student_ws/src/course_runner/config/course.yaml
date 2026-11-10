@@ -18,7 +18,7 @@ course_runner:
     path_step: 0.025      # path point spacing (m)
     turn_penalty: 0.5     # A* extra cost per corner: prefer routes with fewer turns
     stop_seconds: 3.5     # rule is 3 s stopped per square; 0.5 s margin
-    align_min_angle: 0.20 # turn on the spot before a leg if heading is off by more (rad)
+    align_min_angle: 0.08 # turn on the spot before a leg if heading is off by more (rad, ~4.6 deg)
     align_time_allowance: 10.0
     blocked_cost: 99      # global costmap value (99 inscribed, 100 lethal) that blocks a square
     replan_attempts: 3    # grid replans per leg before falling back to the Nav2 planner

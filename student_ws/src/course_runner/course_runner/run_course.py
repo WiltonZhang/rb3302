@@ -236,7 +236,9 @@ class CourseRunner(Node):
         self.declare_parameter('path_step', 0.025)
         self.declare_parameter('turn_penalty', 0.5)
         self.declare_parameter('stop_seconds', 3.5)
-        self.declare_parameter('align_min_angle', 0.20)
+        # 0.20 rad (11.5 deg) let legs start visibly off the compass axis and
+        # RPP only steered that out gradually; 0.08 rad = 4.6 deg.
+        self.declare_parameter('align_min_angle', 0.08)
         self.declare_parameter('align_time_allowance', 10.0)
         self.declare_parameter('blocked_cost', 99)
         self.declare_parameter('replan_attempts', 3)
