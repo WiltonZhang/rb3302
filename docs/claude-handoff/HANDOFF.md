@@ -321,3 +321,21 @@ turning starts as the robot enters the corner square, 1.8 steering reversals on 
 (`7f6eeaf`: 7.1), whole runs 79-162 s. `centre_on` now backs straight onto a goal centre the
 robot stopped past (Nav2 `backup`), instead of turning round. `corner_radius: 0.0` keeps the
 straight-run mode.
+
+### 7.5 Owner's run of `0cbd2e4`: stuck turning
+> "this execution is way worse, the robot just gets stuck at turning"
+
+The six Nav2 values changed in `0cbd2e4` came from a simulation that modelled turning as a fixed
+fraction of the command and a clean speed reading. The real robot needs a minimum turn command to
+beat tyre scrub, and the driver's speed (`dist_centre` difference at 100 Hz) is jumpy. So:
+- `regulated_linear_scaling_min_speed` 0.08: the arc turn command (speed x curvature) was too
+  small to turn the robot.
+- `use_velocity_scaled_lookahead_dist` true / `min_lookahead_dist` 0.12: the lookahead followed
+  the jumpy speed and sat at 0.12 m whenever the robot was slow.
+- `rotate_to_heading_angular_vel` 1.2, `rotate_to_heading_min_angle` 1.0, Spin
+  `rotational_acc_lim` 3.0: weaker and later turning, and Spin ends turns at low command.
+
+All six are back to `6749477` (= `116bdf3` values except 0.18 m/s from `7f6eeaf`); the corner
+arcs (`corner_radius` 0.30) stay, as in `116bdf3` and `7f6eeaf`. `BACKUP_SPEED` 0.05 -> 0.08.
+**Lesson: do not tune turn speeds, arc speed or Spin braking below the `116bdf3` values, and do
+not pick speed values from a simulation without tyre scrub.**

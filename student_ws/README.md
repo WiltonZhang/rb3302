@@ -149,7 +149,7 @@ By default (`--planner grid`) each leg is planned with A* over the 24 squares
 The route goes through square centres. In each square where it turns, it
 follows a 0.30 m arc (`corner_radius`) from the edge it enters by to the edge
 it leaves by, so the robot starts turning as soon as it enters the square; RPP
-slows to 0.08 m/s on the arc and steers it without stopping. Each leg goes
+slows to 0.12 m/s on the arc and steers it. Each leg goes
 straight in to the goal centre and is sent in one go to the RPP controller
 (`follow_path`). At each goal the robot turns on the spot (Nav2 `spin`) onto
 the next leg. Each path ends 3 cm past the goal centre (`goal_extension`) so

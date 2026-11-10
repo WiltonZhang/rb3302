@@ -82,8 +82,9 @@ WALLS = {frozenset(pair) for pair in (
     'BH', 'GH', 'HN', 'NO', 'NT', 'IJ', 'JP', 'JK', 'EK', 'KL', 'PV', 'QW')}
 # (d_row, d_col) moves: North, South, West, East
 MOVES = ((-1, 0), (1, 0), (0, -1), (0, 1))
-# m/s for backing straight onto a goal centre the robot stopped past
-BACKUP_SPEED = 0.05
+# m/s for backing straight onto a goal centre the robot stopped past; same as
+# RPP's min_approach_linear_velocity, the slowest speed known to move the robot
+BACKUP_SPEED = 0.08
 
 
 def yaw_to_quaternion(yaw):
