@@ -24,6 +24,8 @@ course_runner:
     replan_attempts: 3    # grid replans per leg before falling back to the Nav2 planner
     controller_id: FollowPath
     goal_checker_id: goal_checker
+    server_timeout: 3.0         # give up on a Nav2 action server that is not there after this (s)
+    strict_lines: true          # straight runs centre to centre, turn on the spot at corners (--round-corners for arcs)
     # --- LiDAR centring on each goal square (disable with --no-centre) ---
     centre_with_lidar: true
     wall_face_distance: 0.25    # square centre -> wall face when only one of two opposite walls exists (m)

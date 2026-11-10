@@ -114,6 +114,27 @@ def square_walls(letter):
     return sides
 
 
+def straight_runs(route):
+    """Split a square route into straight runs that share their corner squares.
+
+    ['X', 'W', 'V', 'P', 'J'] -> [['X', 'W', 'V'], ['V', 'P', 'J']]
+    """
+    if len(route) < 2:
+        return [route]
+    runs, run, step = [], [route[0]], None
+    for prev, cur in zip(route, route[1:]):
+        r0, c0 = divmod(LETTERS.index(prev), COLS)
+        r1, c1 = divmod(LETTERS.index(cur), COLS)
+        move = (r1 - r0, c1 - c0)
+        if step is not None and move != step:
+            runs.append(run)
+            run = [prev]
+        run.append(cur)
+        step = move
+    runs.append(run)
+    return runs
+
+
 def wall_offsets(points, walls, face, band=0.08, near=0.08, far=0.45, min_points=5):
     """How far the robot is from the real centre of its square, from LiDAR.
 
@@ -228,6 +249,9 @@ def rounded_polyline(corners, radius, step):
             continue
         # tangent length, capped at half of either neighbouring segment
         tangent = min(radius * math.tan(abs(turn) / 2.0), len_in / 2.0, len_out / 2.0)
+        if tangent <= 1e-9:  # radius 0: sharp corner
+            line_to((x1, y1))
+            continue
         r = tangent / math.tan(abs(turn) / 2.0)
         start = (x1 - u_in[0] * tangent, y1 - u_in[1] * tangent)
         line_to(start)
@@ -296,6 +320,12 @@ class CourseRunner(Node):
         self.declare_parameter('replan_attempts', 3)
         self.declare_parameter('controller_id', 'FollowPath')
         self.declare_parameter('goal_checker_id', 'goal_checker')
+        # Action servers that do not answer within this are reported, not waited
+        # on forever (a missing navigate_to_pose server hung the run).
+        self.declare_parameter('server_timeout', 3.0)
+        # Strict legs: straight runs between square centres, stop and turn on
+        # the spot at every corner (no rounded corners).
+        self.declare_parameter('strict_lines', True)
         # LiDAR centring on each goal square (see centre_on_square)
         self.declare_parameter('centre_with_lidar', True)
         self.declare_parameter('wall_face_distance', 0.25)
@@ -327,6 +357,8 @@ class CourseRunner(Node):
         self.controller_id = str(param('controller_id'))
         self.goal_checker_id = str(param('goal_checker_id'))
         self.centre_with_lidar = bool(param('centre_with_lidar')) and not args.no_centre
+        self.server_timeout = float(param('server_timeout'))
+        self.strict_lines = bool(param('strict_lines')) and not args.round_corners
         self.wall_face = float(param('wall_face_distance'))
         self.centre_tol = float(param('centre_tolerance'))
         self.centre_max = float(param('centre_max_correction'))
@@ -560,7 +592,11 @@ class CourseRunner(Node):
     def _send(self, client, goal, name, feedback_cb=None, retries=10):
         """Send an action goal, retrying while Nav2 is still activating."""
         self.get_logger().info('waiting for %s action server ...' % name)
-        client.wait_for_server()
+        if not client.wait_for_server(timeout_sec=self.server_timeout):
+            self.get_logger().error(
+                '%s action server not available after %.0f s - is its Nav2 node '
+                'running? (ros2 action list)' % (name, self.server_timeout))
+            return None
         for _ in range(retries):
             future = client.send_goal_async(goal, feedback_callback=feedback_cb)
             rclpy.spin_until_future_complete(self, future)
@@ -661,9 +697,32 @@ class CourseRunner(Node):
                     return letter
         return None
 
-    def leg_poses(self, route):
+    def leg_poses(self, route, radius=None):
         corners = [self.square_center(letter) for letter in route]
-        return rounded_polyline(corners, self.corner_radius, self.path_step)
+        if radius is None:
+            radius = 0.0 if self.strict_lines else self.corner_radius
+        return rounded_polyline(corners, radius, self.path_step)
+
+    def drive_route(self, route, poses):
+        """Drive a planned route. Returns (reached, last square reached).
+
+        strict_lines: one straight run at a time; before each run the robot
+        turns on the spot onto its compass direction, then RPP follows a dead
+        straight line from centre to centre. Otherwise the whole rounded path
+        is sent in one go.
+        """
+        if not self.strict_lines:
+            self.turn_to(poses[0][2])
+            return self.follow_path(poses), route[0]
+        reached = route[0]
+        for run in straight_runs(route):
+            run_poses = self.leg_poses(run, radius=0.0)
+            self.get_logger().info('straight run %s' % ' -> '.join(run))
+            self.turn_to(run_poses[0][2])
+            if not self.follow_path(run_poses):
+                return False, reached
+            reached = run[-1]
+        return True, reached
 
     def plan_leg(self, here, goal):
         """Grid route here -> goal and its path, avoiding blocked squares."""
@@ -737,10 +796,11 @@ class CourseRunner(Node):
             self.get_logger().info(
                 'route %s (attempt %d)' % (' -> '.join(route), attempt))
             self.publish_path(poses)
-            self.turn_to(poses[0][2])
-            if self.follow_path(poses):
+            ok, reached = self.drive_route(route, poses)
+            if ok:
                 return True
-            self.get_logger().warn('follow_path %s -> %s failed' % (here, goal))
+            self.get_logger().warn('follow_path %s -> %s failed after reaching %s'
+                                   % (here, goal, reached))
             # give the costmap a moment to mark whatever stopped the robot
             self.pause(1.5)
             pose = self.robot_pose()
@@ -931,6 +991,9 @@ def parse_args(argv):
                         help='rough start heading: N/E/S/W/NE/... or degrees')
     parser.add_argument('--goals', nargs='+', type=parse_letter, default=[],
                         help='squares to visit in order, e.g. A J Q X')
+    parser.add_argument('--round-corners', action='store_true',
+                        help='rounded corners in one path instead of strict '
+                             'straight runs with turns on the spot')
     parser.add_argument('--no-centre', action='store_true',
                         help='skip LiDAR centring on each goal square')
     parser.add_argument('--no-spin', action='store_true',
