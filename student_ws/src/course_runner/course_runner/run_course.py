@@ -45,11 +45,13 @@ import rclpy
 from action_msgs.msg import GoalStatus
 from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
-from nav2_msgs.action import FollowPath, FollowWaypoints, NavigateToPose, Spin
+from nav2_msgs.action import (BackUp, DriveOnHeading, FollowPath, FollowWaypoints,
+                              NavigateToPose, Spin)
 from nav_msgs.msg import OccupancyGrid, Path
 from rclpy.action import ActionClient
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy
+from rclpy.qos import QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
+from sensor_msgs.msg import LaserScan
 from std_srvs.srv import Trigger
 from visualization_msgs.msg import Marker, MarkerArray
 
@@ -97,6 +99,56 @@ def neighbours(letter, blocked):
         if frozenset((letter, other)) in WALLS or other in blocked:
             continue
         yield other, move
+
+
+def square_walls(letter):
+    """Sides ('N', 'S', 'W', 'E') of a square that have a wall: interior walls
+    from the brief plus the outer boundary of the course."""
+    row, col = divmod(LETTERS.index(letter), COLS)
+    sides = set()
+    for side, (d_row, d_col) in zip('NSWE', MOVES):
+        r, c = row + d_row, col + d_col
+        if not (0 <= r < ROWS and 0 <= c < COLS) or \
+                frozenset((letter, LETTERS[r * COLS + c])) in WALLS:
+            sides.add(side)
+    return sides
+
+
+def wall_offsets(points, walls, face, band=0.08, near=0.08, far=0.45, min_points=5):
+    """How far the robot is from the real centre of its square, from LiDAR.
+
+    points: scan points relative to the chassis centre in course axes, as
+    (north, west) metres. walls: sides of the square that have a wall.
+    face: centre-to-wall-face distance used when only one of two opposite
+    walls exists (with both, the wall thickness cancels out).
+    For each walled side, the distance is the median of the points in a strip
+    `band` wide straight out from the robot towards that side.
+    Returns (north_error, west_error, distances): the robot is north_error
+    metres North and west_error metres West of the centre (None when that axis
+    has no usable wall).
+    """
+    strips = {
+        'N': [n for n, w in points if abs(w) < band and near < n < far],
+        'S': [-n for n, w in points if abs(w) < band and near < -n < far],
+        'W': [w for n, w in points if abs(n) < band and near < w < far],
+        'E': [-w for n, w in points if abs(n) < band and near < -w < far],
+    }
+    dist = {}
+    for side in walls:
+        values = sorted(strips[side])
+        if len(values) >= min_points:
+            dist[side] = values[len(values) // 2]
+
+    def axis(pos, neg):
+        if pos in dist and neg in dist:
+            return (dist[neg] - dist[pos]) / 2.0
+        if pos in dist:
+            return face - dist[pos]
+        if neg in dist:
+            return dist[neg] - face
+        return None
+
+    return axis('N', 'S'), axis('W', 'E'), dist
 
 
 def grid_astar(start, goal, blocked=(), turn_penalty=0.5):
@@ -244,6 +296,14 @@ class CourseRunner(Node):
         self.declare_parameter('replan_attempts', 3)
         self.declare_parameter('controller_id', 'FollowPath')
         self.declare_parameter('goal_checker_id', 'goal_checker')
+        # LiDAR centring on each goal square (see centre_on_square)
+        self.declare_parameter('centre_with_lidar', True)
+        self.declare_parameter('wall_face_distance', 0.25)
+        self.declare_parameter('centre_tolerance', 0.02)
+        self.declare_parameter('centre_max_correction', 0.12)
+        self.declare_parameter('centre_speed', 0.10)
+        self.declare_parameter('base_to_centre_x', 0.0)
+        self.declare_parameter('turn_clearance', 0.15)
 
         param = lambda name: self.get_parameter(name).value
         self.frame_id = str(param('frame_id'))
@@ -266,6 +326,13 @@ class CourseRunner(Node):
         self.replan_attempts = int(param('replan_attempts'))
         self.controller_id = str(param('controller_id'))
         self.goal_checker_id = str(param('goal_checker_id'))
+        self.centre_with_lidar = bool(param('centre_with_lidar')) and not args.no_centre
+        self.wall_face = float(param('wall_face_distance'))
+        self.centre_tol = float(param('centre_tolerance'))
+        self.centre_max = float(param('centre_max_correction'))
+        self.centre_speed = float(param('centre_speed'))
+        self.base_to_centre_x = float(param('base_to_centre_x'))
+        self.turn_clearance = float(param('turn_clearance'))
 
         self.start = args.start
         self.bearing_deg = args.bearing
@@ -283,6 +350,12 @@ class CourseRunner(Node):
         self.path_pub = self.create_publisher(Path, 'plan', 10)
         self.follow_path_client = ActionClient(self, FollowPath, 'follow_path')
         self.navigate_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
+        self.drive_client = ActionClient(self, DriveOnHeading, 'drive_on_heading')
+        self.backup_client = ActionClient(self, BackUp, 'backup')
+        self.scan_msg = None
+        self.scan_stamp = None
+        self.create_subscription(
+            LaserScan, 'scan', self._scan_callback, qos_profile_sensor_data)
         self.tf_buffer = None
         if Buffer is not None:
             self.tf_buffer = Buffer()
@@ -686,12 +759,143 @@ class CourseRunner(Node):
             % (1000.0 * math.hypot(pose[0] - x, pose[1] - y), letter,
                pose[0] - x, pose[1] - y))
 
+    # ------------------------------------------------------ LiDAR centring
+    def _scan_callback(self, msg):
+        self.scan_msg = msg
+        self.scan_stamp = time.monotonic()
+
+    def scan_points(self):
+        """Latest scan as (north, west) points relative to the chassis centre.
+
+        Waits for a scan received at least 0.2 s after the call, so no part of
+        it was taken while the robot was still moving.
+        Returns None without a scan, TF or robot pose.
+        """
+        asked = time.monotonic() + 0.2
+        while self.scan_stamp is None or self.scan_stamp <= asked:
+            if time.monotonic() - asked > 1.5:
+                return None
+            rclpy.spin_once(self, timeout_sec=0.05)
+        scan, pose = self.scan_msg, self.robot_pose()
+        if pose is None or self.tf_buffer is None:
+            return None
+        try:
+            t = self.tf_buffer.lookup_transform(
+                self.base_frame, scan.header.frame_id, Time())
+        except TF_ERRORS as exc:
+            self.get_logger().warn('no TF %s -> %s: %s'
+                                   % (scan.header.frame_id, self.base_frame, exc))
+            return None
+        q = t.transform.rotation
+        laser_yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                               1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        lx0, ly0 = t.transform.translation.x, t.transform.translation.y
+        heading = pose[2] - self.north_yaw
+        ch, sh = math.cos(heading), math.sin(heading)
+        cl, sl = math.cos(laser_yaw), math.sin(laser_yaw)
+        points = []
+        for i, r in enumerate(scan.ranges):
+            if not (scan.range_min < r < scan.range_max) or math.isinf(r) or math.isnan(r):
+                continue
+            a = scan.angle_min + i * scan.angle_increment
+            px, py = r * math.cos(a), r * math.sin(a)
+            # laser -> base_link -> chassis centre
+            bx = lx0 + cl * px - sl * py - self.base_to_centre_x
+            by = ly0 + sl * px + cl * py
+            # robot axes -> course axes (x North, y West)
+            points.append((ch * bx - sh * by, sh * bx + ch * by))
+        return points
+
+    def drive_straight(self, distance):
+        """Small forward (+) or backward (-) move with no turning."""
+        forward = distance > 0.0
+        goal = DriveOnHeading.Goal() if forward else BackUp.Goal()
+        goal.target.x = abs(distance)
+        goal.speed = self.centre_speed
+        goal.time_allowance = Duration(
+            sec=int(3.0 + 3.0 * abs(distance) / max(self.centre_speed, 0.01)))
+        client = self.drive_client if forward else self.backup_client
+        result = self._send(client, goal, 'drive_on_heading' if forward else 'backup')
+        ok = result is not None and result.status == GoalStatus.STATUS_SUCCEEDED
+        if not ok:
+            self.get_logger().warn('centring move of %.0f mm did not finish'
+                                   % (1000.0 * distance))
+        return ok
+
+    def centre_on_square(self, letter):
+        """Centre the robot on the real walls of `letter` with the LiDAR.
+
+        The robot stops where AMCL thinks the centre is; if rb3302_map and the
+        real course differ, that is not the real centre. Using only the sides
+        that have a wall (brief's wall list + outer boundary), the LiDAR gives
+        the real offset. The robot then moves straight forward/back to fix the
+        along-track offset and, if the side offset is still over tolerance and
+        there is room to turn, turns 90 deg once and moves sideways. At most one
+        turn per square; anything implausible is logged and left alone.
+        """
+        walls = square_walls(letter)
+        points = self.scan_points()
+        if points is None:
+            self.get_logger().warn('centring %s skipped: no scan / TF / pose' % letter)
+            return
+        e_n, e_w, dist = wall_offsets(points, walls, self.wall_face)
+        self.get_logger().info(
+            'LiDAR at %s: walls %s, distances %s -> %s of real centre'
+            % (letter, ''.join(sorted(walls)),
+               ', '.join('%s %.3f' % kv for kv in sorted(dist.items())),
+               'N %+.3f / W %+.3f' % (e_n or 0.0, e_w or 0.0)))
+        e_n, e_w = e_n or 0.0, e_w or 0.0
+        if max(abs(e_n), abs(e_w)) > self.centre_max:
+            self.get_logger().warn(
+                'centring %s skipped: offset over %.0f mm looks wrong'
+                % (letter, 1000.0 * self.centre_max))
+            return
+        pose = self.robot_pose()
+        if pose is None:
+            return
+        heading = pose[2] - self.north_yaw
+        # correction (-e) split into along the heading and to the robot's left
+        along = -e_n * math.cos(heading) - e_w * math.sin(heading)
+        left = e_n * math.sin(heading) - e_w * math.cos(heading)
+        if abs(along) > self.centre_tol:
+            self.get_logger().info('centring %s: %+.0f mm along the heading'
+                                   % (letter, 1000.0 * along))
+            self.drive_straight(along)
+        if abs(left) > self.centre_tol:
+            points = self.scan_points()
+            closest = min((math.hypot(n, w) for n, w in points), default=9.0) \
+                if points else 0.0
+            if closest < self.turn_clearance:
+                self.get_logger().warn(
+                    'centring %s: %+.0f mm sideways not done, a wall is %.0f mm away '
+                    '(need %.0f to turn)' % (letter, 1000.0 * left, 1000.0 * closest,
+                                             1000.0 * self.turn_clearance))
+            else:
+                self.get_logger().info('centring %s: %+.0f mm sideways (turn 90 deg, drive)'
+                                       % (letter, 1000.0 * left))
+                goal = Spin.Goal()
+                goal.target_yaw = math.copysign(math.pi / 2.0, left)
+                goal.time_allowance = Duration(sec=int(self.align_allowance))
+                result = self._send(self.spin_client, goal, 'spin')
+                if result is not None and result.status == GoalStatus.STATUS_SUCCEEDED:
+                    self.drive_straight(abs(left))
+                else:
+                    self.get_logger().warn('centring turn did not finish, side offset left')
+        points = self.scan_points()
+        if points is not None:
+            e_n, e_w, _ = wall_offsets(points, walls, self.wall_face)
+            self.get_logger().info(
+                'after centring %s: N %+.3f / W %+.3f m from the real centre'
+                % (letter, e_n or 0.0, e_w or 0.0))
+
     def run_grid(self):
         missed = []
         here = self.start
         for i, goal in enumerate(self.goals, 1):
             self.get_logger().info('heading to %d/%d: %s' % (i, len(self.goals), goal))
             if self.drive_leg(here, goal):
+                if self.centre_with_lidar:
+                    self.centre_on_square(goal)
                 self.log_stop_error(goal)
                 here = goal
                 self.pause(self.stop_seconds)
@@ -727,6 +931,8 @@ def parse_args(argv):
                         help='rough start heading: N/E/S/W/NE/... or degrees')
     parser.add_argument('--goals', nargs='+', type=parse_letter, default=[],
                         help='squares to visit in order, e.g. A J Q X')
+    parser.add_argument('--no-centre', action='store_true',
+                        help='skip LiDAR centring on each goal square')
     parser.add_argument('--no-spin', action='store_true',
                         help='skip the in-place spin used to converge AMCL')
     parser.add_argument('--planner', choices=('grid', 'nav2'), default='grid',

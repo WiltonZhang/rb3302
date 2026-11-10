@@ -24,3 +24,11 @@ course_runner:
     replan_attempts: 3    # grid replans per leg before falling back to the Nav2 planner
     controller_id: FollowPath
     goal_checker_id: goal_checker
+    # --- LiDAR centring on each goal square (disable with --no-centre) ---
+    centre_with_lidar: true
+    wall_face_distance: 0.25    # square centre -> wall face when only one of two opposite walls exists (m)
+    centre_tolerance: 0.02      # leave offsets smaller than this (m)
+    centre_max_correction: 0.12 # offsets bigger than this are treated as a bad reading (m)
+    centre_speed: 0.10          # speed of the small correction moves (m/s)
+    base_to_centre_x: 0.0       # chassis centre is this far ahead of base_link (m); set from a tape measurement
+    turn_clearance: 0.15        # no sideways correction if a wall is closer than this (corner of 19x19 cm sweeps 0.134 m)
