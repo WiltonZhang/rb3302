@@ -14,8 +14,8 @@ course_runner:
     spin_time_allowance: 25.0
     # --- grid planner (default --planner grid) ---
     base_frame: base_link
-    corner_radius: 0.0    # 0: straight runs, stop and turn on the spot at corners;
-                          # > 0 (<= cell/2): rounded corner arcs of that radius
+    corner_radius: 0.30   # corner arc radius; 0.30 (= cell/2) starts the turn at the
+                          # edge of the square; 0: straight runs + turn on the spot
     path_step: 0.025      # path point spacing (m)
     turn_penalty: 1.0     # A* extra cost per corner (a stop + turn costs about one square)
     goal_extension: 0.03  # path ends this far past each centre so the goal checker

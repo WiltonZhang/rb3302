@@ -294,3 +294,30 @@ the skid-steer stalls, Spin aborts and the run hesitates. Keep turn speeds at th
   11 cm from the walls 4.5 cm off a straight line and 6.6 cm when turning on the spot 5 cm off a
   centre. Estimated run times 110-178 s; if a long mission gets close to 3 min, raise
   `desired_linear_vel` to 0.22 (the `116bdf3` value).
+
+### 7.4 Owner's run of `6749477`, and smooth corners
+> "The robot oscillates a lot when it comes to turning to reach the goal. I want it to smoothly
+> turn into the the center of the grids ... the moment it enters the starting of the grid, the
+> robot should be turning in already." Also: the recovery turn after over-rotating is too much,
+> but it must not stop too much.
+
+Stopping on each corner centre to turn made the turn start only at the centre (or past it after
+the forward skid), so from E the robot went into J near its West wall. Rounded corners are back
+(`corner_radius` 0.30: the arc runs from the edge the square is entered by to the edge it is left
+by), with RPP values chosen in a simulation of the under-turning robot on the map (E-D-J, W-V-U-O,
+I-C-D-J; turn ratio 0.35-0.7, lag 0.1-0.3 s, +/-8 deg after Spin, AMCL jumps):
+
+| Parameter | `6749477` | Now | Why |
+|---|---|---|---|
+| `use_velocity_scaled_lookahead_dist` | false | true | lookahead = speed x 1.5 s: ~0.27 m on straights, 0.12 m on arcs |
+| `min_lookahead_dist` | 0.15 | 0.12 | short enough to steer the 0.30 m arc |
+| `rotate_to_heading_min_angle` | 0.785 | 1.0 | on an arc the robot lags 40-55 deg; below that RPP stopped to turn |
+| `rotate_to_heading_angular_vel` | 1.5 | 1.2 | gentler turn back after an over-rotation (1.0 and 0.8 stalled) |
+| `regulated_linear_scaling_min_speed` | 0.12 | 0.08 | arcs driven at 0.08 m/s: 6.6 cm worst off the arc instead of 9 cm |
+| Spin `rotational_acc_lim` | 4.0 | 3.0 | brakes from ~31 deg before the target: less over-rotation |
+
+Simulated: no stop-and-turn on any corner (`7f6eeaf` values: ~3 per corner), closest wall 8 cm,
+turning starts as the robot enters the corner square, 1.8 steering reversals on a 1.8 m straight
+(`7f6eeaf`: 7.1), whole runs 79-162 s. `centre_on` now backs straight onto a goal centre the
+robot stopped past (Nav2 `backup`), instead of turning round. `corner_radius: 0.0` keeps the
+straight-run mode.

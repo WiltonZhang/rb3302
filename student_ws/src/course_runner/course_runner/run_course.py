@@ -11,16 +11,19 @@ Usage (robot_init + planning_rpp or planning_astar already running):
 
 Planners:
   grid (default)  A* over the 24 squares (walls from the L08b brief, plus any
-                  square the global costmap shows as blocked). The route is
-                  driven as straight runs from square centre to square centre:
-                  at every square where it turns (and at each goal) the robot
-                  stops on the centre and turns on the spot (Spin), then the
-                  RPP controller (FollowPath) follows a dead-straight line, so
-                  Nav2 does not replan it every second. corner_radius > 0
-                  rounds the corners instead (one path per leg). If a leg
-                  cannot be driven, it is replanned, and the last resort is
-                  Nav2's own planner (NavigateToPose). A robot that stops more
-                  than centre_tolerance off a goal centre makes one straight
+                  square the global costmap shows as blocked). The route runs
+                  through square centres. In a square where it turns, it
+                  follows a corner_radius (0.30 m) arc from the edge it
+                  enters by to the edge it leaves by, so the robot starts
+                  turning as it enters the square. Each leg goes straight in
+                  to the goal centre and is sent in one go to the RPP
+                  controller (FollowPath), so Nav2 does not replan it every
+                  second. At each goal the robot turns on the spot (Spin)
+                  onto the next leg. corner_radius 0 instead drives straight
+                  runs and turns on the spot at every corner. If a leg cannot
+                  be driven, it is replanned, and the last resort is Nav2's
+                  own planner (NavigateToPose). A robot that stops more than
+                  centre_tolerance off a goal centre makes one straight
                   correction onto it.
   nav2            Nav2 FollowWaypoints with the NavFn A* planner, as before.
 
@@ -48,7 +51,7 @@ import rclpy
 from action_msgs.msg import GoalStatus
 from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
-from nav2_msgs.action import FollowPath, FollowWaypoints, NavigateToPose, Spin
+from nav2_msgs.action import BackUp, FollowPath, FollowWaypoints, NavigateToPose, Spin
 from nav_msgs.msg import OccupancyGrid, Path
 from rclpy.action import ActionClient
 from rclpy.node import Node
@@ -79,6 +82,8 @@ WALLS = {frozenset(pair) for pair in (
     'BH', 'GH', 'HN', 'NO', 'NT', 'IJ', 'JP', 'JK', 'EK', 'KL', 'PV', 'QW')}
 # (d_row, d_col) moves: North, South, West, East
 MOVES = ((-1, 0), (1, 0), (0, -1), (0, 1))
+# m/s for backing straight onto a goal centre the robot stopped past
+BACKUP_SPEED = 0.05
 
 
 def yaw_to_quaternion(yaw):
@@ -273,7 +278,7 @@ class CourseRunner(Node):
         self.declare_parameter('spin_time_allowance', 25.0)
         # grid planner
         self.declare_parameter('base_frame', 'base_link')
-        self.declare_parameter('corner_radius', 0.0)
+        self.declare_parameter('corner_radius', 0.30)
         self.declare_parameter('path_step', 0.025)
         self.declare_parameter('turn_penalty', 1.0)
         self.declare_parameter('goal_extension', 0.03)
@@ -342,6 +347,7 @@ class CourseRunner(Node):
         self.waypoint_client = ActionClient(
             self, FollowWaypoints, 'follow_waypoints')
         self.spin_client = ActionClient(self, Spin, 'spin')
+        self.backup_client = ActionClient(self, BackUp, 'backup')
         # Nav2 only activates planner/controller/behaviors once AMCL publishes
         # map->odom, i.e. after the initial pose; this service says when it is done.
         self.nav_active_client = self.create_client(
@@ -710,13 +716,11 @@ class CourseRunner(Node):
     def drive_route(self, route, poses):
         """Drive a planned route. Returns (reached, last square reached).
 
-        corner_radius 0: one straight run at a time. Before each run the robot
-        turns on the spot (Spin, which slows down before the target) onto the
-        run's compass direction, then RPP follows a dead-straight line to the
-        next square where the route turns, or to the goal, and stops on its
-        centre. RPP never has to track an arc, which this skid-steer cannot do
-        without lagging and stopping to turn. corner_radius > 0: the rounded
-        path is sent in one go.
+        corner_radius > 0 (default 0.30): the robot turns on the spot (Spin,
+        which slows down before the target) onto the first segment, then the
+        whole rounded path is sent in one go; RPP steers each corner arc
+        without stopping. corner_radius 0: one straight run at a time, with a
+        stop and a turn on the spot at every corner.
         """
         if self.corner_radius > 0.0:
             self.turn_to(poses[0][2])
@@ -774,15 +778,33 @@ class CourseRunner(Node):
 
     def centre_on(self, letter):
         """If the robot stopped more than centre_tolerance from the centre of
-        letter, turn on the spot towards the centre and drive straight onto it
-        (once). Scoring needs the robot over the label, and the next leg's
-        turn on the spot needs it clear of the walls."""
+        letter, move onto it (once). Scoring needs the robot over the label,
+        and the next leg's turn on the spot needs it clear of the walls.
+
+        Stopped past the centre along its heading: back straight onto it
+        (BackUp), no turning round. Otherwise turn on the spot towards the
+        centre and drive straight onto it.
+        """
         pose = self.robot_pose()
         if pose is None:
             return
         x, y = self.square_center(letter)
-        error = math.hypot(x - pose[0], y - pose[1])
+        dx, dy = x - pose[0], y - pose[1]
+        error = math.hypot(dx, dy)
         if error <= self.centre_tolerance:
+            return
+        ahead = dx * math.cos(pose[2]) + dy * math.sin(pose[2])
+        side = -dx * math.sin(pose[2]) + dy * math.cos(pose[2])
+        if ahead < 0.0 and abs(side) <= self.centre_tolerance:
+            self.get_logger().info(
+                '%.0f mm past the centre of %s, backing onto it' % (-1000.0 * ahead, letter))
+            goal = BackUp.Goal()
+            goal.target.x = float(-ahead)
+            goal.speed = BACKUP_SPEED
+            goal.time_allowance = Duration(sec=int(self.align_allowance))
+            result = self._send(self.backup_client, goal, 'backup')
+            if result is None or result.status != GoalStatus.STATUS_SUCCEEDED:
+                self.get_logger().warn('could not back onto the centre of %s' % letter)
             return
         self.get_logger().info(
             '%.0f mm from the centre of %s, driving onto it' % (1000.0 * error, letter))
@@ -846,9 +868,8 @@ def parse_args(argv):
     parser.add_argument('--no-spin', action='store_true',
                         help='skip the in-place spin used to converge AMCL')
     parser.add_argument('--planner', choices=('grid', 'nav2'), default='grid',
-                        help='grid: straight runs between square centres, '
-                             'turning on the spot at corners (default); '
-                             'nav2: FollowWaypoints + NavFn A*')
+                        help='grid: square-centre route with 0.30 m corner '
+                             'arcs (default); nav2: FollowWaypoints + NavFn A*')
     parser.add_argument('--avoid', nargs='+', type=parse_letter, default=[],
                         help='squares to route around (e.g. the obstacle square)')
     parser.add_argument('--dry-run', action='store_true',
