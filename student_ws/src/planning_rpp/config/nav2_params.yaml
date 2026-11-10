@@ -33,7 +33,9 @@ amcl:
     pf_z: 0.99
     # Update often: cells are only 60 cm and the start yaw is only +/-45 deg.
     update_min_d: 0.05
-    update_min_a: 0.1
+    # 0.1 rad -> 0.05: correct the heading twice as often while turning, so
+    # straight legs start along the compass axis.
+    update_min_a: 0.05
     resample_interval: 1
     recovery_alpha_fast: 0.0
     recovery_alpha_slow: 0.0
@@ -81,7 +83,8 @@ controller_server:
       stateful: true
     FollowPath:
       plugin: nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController
-      desired_linear_vel: 0.22
+      # 0.22 finished well inside 3 min; 0.15 for a calmer, more accurate run.
+      desired_linear_vel: 0.15
       # Short lookahead so the carrot does not cut 90 deg corners into walls.
       # 0.20 also keeps the steady heading error on the 0.30 m corner arcs of
       # course_runner's grid path below rotate_to_heading_min_angle.
@@ -93,9 +96,9 @@ controller_server:
       # 4WD skid-steer only turns at ~1/3 of the commanded rate (360 deg spin took 18 s at 1.0).
       # Teleop turns well at 1.5; driver clamps at 3.0.
       # 2.5 overshot every turn (RPP has no slow-down near the target heading),
-      # so it is back to 1.5. Big turns are done by Spin in course_runner,
+      # so 1.5, now 1.2 for the slower run. Big turns are done by Spin in course_runner,
       # which does slow down; this is only the fallback.
-      rotate_to_heading_angular_vel: 1.5
+      rotate_to_heading_angular_vel: 1.2
       transform_tolerance: 0.2
       min_approach_linear_velocity: 0.08
       approach_velocity_scaling_dist: 0.20
@@ -105,7 +108,7 @@ controller_server:
       # Slow down on the 0.30 m corner arcs (0.22 * 0.30 / 0.45 = 0.15 m/s)
       # so the skid-steer can keep up with the turn.
       regulated_linear_scaling_min_radius: 0.45
-      regulated_linear_scaling_min_speed: 0.12
+      regulated_linear_scaling_min_speed: 0.10
       use_cost_regulated_linear_velocity_scaling: true
       cost_scaling_dist: 0.12
       cost_scaling_gain: 1.0
@@ -118,7 +121,10 @@ controller_server:
       # sideways (6 cm at 0.25 m lookahead is 14 deg), and then it overshot.
       # 45 deg lets RPP steer through small errors and the grid path's arcs
       # while driving; turns at the start of a leg are done by Spin.
-      rotate_to_heading_min_angle: 0.785
+      # 0.785 -> 0.9: the smoothed corners peak at 0.2 m radius, which needs
+      # ~31 deg to the carrot at 0.20 m lookahead (more if the skid-steer lags);
+      # stay clear of stop-and-rotate in the middle of a corner.
+      rotate_to_heading_min_angle: 0.9
       # RPP limits each in-place turn command to measured rate + accel*dt.
       # At 2.0 that is 0.1 rad/s from standstill, too little to beat tyre scrub,
       # so the robot never starts turning. Smoothing is left to velocity_smoother.
@@ -243,11 +249,12 @@ behavior_server:
     robot_base_frame: base_link
     transform_tolerance: 0.2
     simulate_ahead_time: 1.0
-    # Spin slows down as it nears the target; 1.8 cap keeps the 90 deg leg
-    # turns from overshooting (2.5 overshot).
-    max_rotational_vel: 1.8
+    # Spin slows down as it nears the target; a 1.2 cap keeps the 90 deg leg
+    # turns from overshooting (2.5 overshot, 1.8 still turned hard).
+    max_rotational_vel: 1.2
     min_rotational_vel: 0.6
-    rotational_acc_lim: 4.0
+    # Spin slows as sqrt(2 * acc * remaining): 3.0 starts slowing earlier.
+    rotational_acc_lim: 3.0
 
 velocity_smoother:
   ros__parameters:
@@ -256,11 +263,13 @@ velocity_smoother:
     feedback: OPEN_LOOP
     # Driver (driver.launch.py) clamps at 0.8 m/s / 3.0 rad/s. Linear kept low for the 60 cm grid;
     # angular at the clamp because skid-steer turns at ~1/3 of the command.
-    max_velocity: [0.25, 0.0, 2.8]
-    min_velocity: [-0.25, 0.0, -2.8]
-    max_accel: [0.6, 0.0, 6.0]
+    # Slower run: linear 0.25 -> 0.18, gentler linear 0.6 -> 0.4 and angular
+    # 6 -> 4 accel so starts and turn-ins ramp in.
+    max_velocity: [0.18, 0.0, 2.8]
+    min_velocity: [-0.18, 0.0, -2.8]
+    max_accel: [0.4, 0.0, 4.0]
     # Angular decel -10: stop a turn quickly once RPP ends it, so less overshoot.
-    max_decel: [-0.6, 0.0, -10.0]
+    max_decel: [-0.5, 0.0, -10.0]
     deadband_velocity: [0.0, 0.0, 0.0]
     velocity_timeout: 1.0
     odom_topic: /odom

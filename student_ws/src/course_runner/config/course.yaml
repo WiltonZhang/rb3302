@@ -1,12 +1,16 @@
 # Grid geometry in the map frame of student_ws/maps/rb3302_map.yaml.
-# In that map North = +x, West = +y; square A centre is at (1.725, 2.905).
+# In that map North = +x, West = +y. The map draws 0.60 m squares; the course
+# was measured at 0.62 m, so square centres are spread to 0.62 m about the
+# course centre (the corner shared by I, J, O, P at (0.825, 1.405)).
+# Outer squares move up to 3 cm N/S and 5 cm E/W from the map's centres.
 # Use with: ros2 run course_runner run_course ... --ros-args --params-file <this>
+# (the defaults in run_course.py are the same values).
 course_runner:
   ros__parameters:
     frame_id: map
-    cell_size: 0.60
-    a_center_x: 1.725
-    a_center_y: 2.905
+    cell_size: 0.62       # square pitch (m); 0.60 = map as drawn
+    center_x: 0.825       # course centre in the map (m)
+    center_y: 1.405
     north_yaw: 0.0        # map yaw of course North (rad)
     xy_stddev: 0.15       # start-square uncertainty given to AMCL (m)
     yaw_stddev: 0.5       # brief says bearing is +/-45 deg
@@ -14,12 +18,18 @@ course_runner:
     spin_time_allowance: 25.0
     # --- grid planner (default --planner grid) ---
     base_frame: base_link
-    corner_radius: 0.30   # arc radius at squares the route turns in (<= cell/2 stays inside)
+    corner_distance: 0.30 # a turn starts/ends this far from the square centre (<= cell/2)
+    corner_smoothness: 0.6 # 0 = circular arc, 1 = steering ramps from zero (tighter middle)
     path_step: 0.025      # path point spacing (m)
     turn_penalty: 0.5     # A* extra cost per corner: prefer routes with fewer turns
     stop_seconds: 3.5     # rule is 3 s stopped per square; 0.5 s margin
-    align_min_angle: 0.20 # turn on the spot before a leg if heading is off by more (rad)
+    align_tolerance: 0.04 # turn on the spot until within this of the compass axis (rad, ~2.3 deg)
+    align_attempts: 3
     align_time_allowance: 10.0
+    merge_distance: 0.50  # blend a start offset back onto the centre line over this (m)
+    settle_yaw_std: 0.04  # AMCL no-motion updates while stopped until yaw std (rad)
+    settle_xy_std: 0.03   #   and x/y std (m) are below these
+    settle_timeout: 4.0   # max settling time after the start spin (s)
     blocked_cost: 99      # global costmap value (99 inscribed, 100 lethal) that blocks a square
     replan_attempts: 3    # grid replans per leg before falling back to the Nav2 planner
     controller_id: FollowPath
