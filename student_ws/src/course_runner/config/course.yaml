@@ -1,26 +1,44 @@
 # Grid geometry in the map frame of student_ws/maps/rb3302_map.yaml.
-# In that map North = +x, West = +y; square A centre is at (1.725, 2.905).
-# Use with: ros2 run course_runner run_course ... --ros-args --params-file <this>
+# In that map +x is East, +y is North and (0, 0) is the south-west corner of the
+# course; squares are 0.5825 m, so square A's centre is at (0.29125, 2.03875).
+# These are also the defaults in run_course.py, so this file is only needed to
+# change them: ros2 run course_runner run_course ... --ros-args --params-file <this>
 course_runner:
   ros__parameters:
     frame_id: map
-    cell_size: 0.60
-    a_center_x: 1.725
-    a_center_y: 2.905
-    north_yaw: 0.0        # map yaw of course North (rad)
+    cell_size: 0.5825
+    a_center_x: 0.29125
+    a_center_y: 2.03875
+    north_yaw: 1.5707963  # map yaw of course North (rad): +y
+    # AMCL rounds to the nearest map-cell corner, so its poses are half a cell
+    # (0.0243 m) low in x and y; aim the same amount low. 0.0 = aim at map centres.
+    aim_offset_x: -0.0243
+    aim_offset_y: -0.0243
     xy_stddev: 0.15       # start-square uncertainty given to AMCL (m)
-    yaw_stddev: 0.5       # brief says bearing is +/-45 deg
-    spin_angle: 6.283     # one full turn to converge AMCL before driving
+    yaw_stddev: 0.6       # brief says bearing is +/-45 deg
+    # --localise still (default): AMCL updates with the robot standing still
+    localise_match_distance: 0.10   # a scan point within this of a wall counts (m)
+    localise_match_fraction: 0.95   # stop once this share of scan points match
+    localise_max_updates: 50
+    localise_timeout: 30.0
+    # --localise spin: one full turn instead
+    spin_angle: 6.283
     spin_time_allowance: 25.0
     # --- grid planner (default --planner grid) ---
     base_frame: base_link
-    corner_radius: 0.30   # arc radius at squares the route turns in (<= cell/2 stays inside)
+    corner_radius: 0.29   # arc radius at squares the route turns in (<= cell/2 stays inside)
     path_step: 0.025      # path point spacing (m)
     turn_penalty: 0.5     # A* extra cost per corner: prefer routes with fewer turns
     stop_seconds: 3.5     # rule is 3 s stopped per square; 0.5 s margin
     align_min_angle: 0.20 # turn on the spot before a leg if heading is off by more (rad)
     align_time_allowance: 10.0
+    goal_extension: 0.03  # end each path this far past the centre so the robot stops on it
+    centre_tolerance: 0.04    # drive forward onto a goal centre if further off (m)
+    centre_ahead_angle: 1.05  # ...and only if the centre is within 60 deg of the heading
     blocked_cost: 99      # global costmap value (99 inscribed, 100 lethal) that blocks a square
+    monitor_period: 0.5   # while driving, check the path ahead in the costmap this often (s)
+    monitor_distance: 1.2 # how far ahead along the path to check (m)
     replan_attempts: 3    # grid replans per leg before falling back to the Nav2 planner
+    server_timeout: 10.0  # give up waiting for a Nav2 action server after this (s)
     controller_id: FollowPath
     goal_checker_id: goal_checker

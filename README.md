@@ -132,17 +132,43 @@ ros2 launch planning_rpp planning.launch.py
 
 ## Graded Run (course_runner)
 
-With `robot_init` and one planning package running, give the start square,
-rough bearing (N/E/S/W, +/-45 deg) and the 4 squares to visit:
+Build once after pulling (adds the `odom_sign` executable):
+
+```bash
+cd ~/rb3302_final_proj_code/student_ws
+colcon build --symlink-install --packages-select course_runner planning_rpp planning_astar
+```
+
+On the robot, after `robot_init`, start these in order, each in its own terminal:
+
+```bash
+source ~/rb3302_final_proj_code/student_ws/install/setup.bash
+ros2 run course_runner odom_sign
+```
+
+```bash
+source ~/rb3302_final_proj_code/student_ws/install/setup.bash
+ros2 launch planning_rpp planning.launch.py raw_odom_topic:=/odom/raw_signed
+```
 
 ```bash
 source ~/rb3302_final_proj_code/student_ws/install/setup.bash
 ros2 run course_runner run_course --start S --bearing N --goals A J Q X
 ```
 
-The node sets the AMCL initial pose from the start square (no RViz click
-needed), spins once in place to converge AMCL, then sends the squares to
-Nav2's waypoint follower, which stops 3.5 s on each square.
+`odom_sign` puts the direction back on the wheel speed. The board reports it
+without a sign, so reversing and turning on the spot read as driving forward,
+and the EKF slid the robot across the map while it was really turning in place.
+`raw_odom_topic:=/odom/raw_signed` is an existing argument of both planning
+launch files, so no launch file is changed. `planning_astar` works the same way.
+
+The runner sets the AMCL initial pose from the start square (no RViz click
+needed) and then localises without moving: it asks AMCL for stationary updates
+until 95 % of the LiDAR points land on mapped walls (usually a few seconds),
+then clears the costmaps. `--localise spin` brings back the 360 deg turn and
+`--localise none` skips both. Each leg is an A* route over the 24 squares
+through the square centres (see `student_ws/README.md` for the details: corner
+arcs, stopping on the centre, replanning around the obstacle).
 
 Check the square letters line up with the map before a run (RViz on the
 laptop, `WaypointMarkers` display, topic `/waypoint_markers`):
@@ -151,7 +177,8 @@ laptop, `WaypointMarkers` display, topic `/waypoint_markers`):
 ros2 run course_runner run_course --start S --bearing N --goals A J Q X --dry-run
 ```
 
-Grid geometry for `maps/rb3302_map.yaml` (North = +x, West = +y, square A
-centre at (1.725, 2.905), 0.60 m squares) is in
-`src/course_runner/config/course.yaml`. Override with
-`--ros-args --params-file <file>` if the map is replaced.
+Grid geometry for `maps/rb3302_map.yaml` (+x East, +y North, (0, 0) at the
+south-west corner of the course, 0.5825 m squares, square A centre at
+(0.291, 2.039)) is in `src/course_runner/config/course.yaml` and is also the
+default in `run_course.py`. Override with `--ros-args --params-file <file>` if
+the map is replaced.

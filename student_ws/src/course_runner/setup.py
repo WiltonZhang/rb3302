@@ -25,6 +25,7 @@ setup(
     entry_points={
         'console_scripts': [
             'run_course = course_runner.run_course:main',
+            'odom_sign = course_runner.odom_sign:main',
         ],
     },
 )
