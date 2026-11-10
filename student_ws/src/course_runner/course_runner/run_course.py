@@ -50,7 +50,7 @@ from nav_msgs.msg import OccupancyGrid, Path
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
-from std_srvs.srv import Trigger
+from std_srvs.srv import Empty, Trigger
 from visualization_msgs.msg import Marker, MarkerArray
 
 try:
@@ -142,11 +142,36 @@ def grid_astar(start, goal, blocked=(), turn_penalty=0.5):
     return None
 
 
-def rounded_polyline(corners, radius, step):
-    """Sample a polyline through corners, with a circular arc at every inner corner.
+def corner_curve(turn, tangent, step, smoothness=0.5):
+    """Points of a smooth turn by `turn` rad, in a frame starting at (0, 0) heading +x.
 
-    The arc of radius r at a 90 deg corner starts r before the corner and ends
-    r after it, so with r <= half a square it stays inside the square it turns
+    Heading follows turn * (s - a sin(2 pi s) / (2 pi)) for s = 0..1, with
+    a = smoothness. Curvature is proportional to 1 - a cos(2 pi s): a = 0 is a
+    circular arc (steering jumps to full lock at the start), a = 1 ramps the
+    steering from zero to a peak twice the arc's and back to zero. In between
+    trades a gentler entry for a tighter middle. The curve is symmetric and
+    scaled so it leaves the straight line `tangent` before the corner and
+    rejoins the next one `tangent` after it.
+    """
+    n = 400
+    xs, ys = [0.0], [0.0]
+    for k in range(n):
+        s = (k + 0.5) / n
+        heading = turn * (s - smoothness * math.sin(2.0 * math.pi * s) / (2.0 * math.pi))
+        xs.append(xs[-1] + math.cos(heading) / n)
+        ys.append(ys[-1] + math.sin(heading) / n)
+    # distance from the start to the corner for the unit-length curve
+    reach = xs[-1] - ys[-1] * math.cos(turn) / math.sin(turn)
+    scale = tangent / reach
+    m = max(2, int(math.ceil(scale / step)))
+    return [(xs[i * n // m] * scale, ys[i * n // m] * scale) for i in range(1, m + 1)]
+
+
+def rounded_polyline(corners, distance, step, smoothness=0.5):
+    """Sample a polyline through corners, with a smooth turn at every inner corner.
+
+    Each turn starts `distance` before the corner and ends `distance` after
+    it, so with distance <= half a square it stays inside the square it turns
     in. End points are kept exactly (the goal is the square centre).
     Returns [(x, y, yaw), ...] spaced about step apart.
     """
@@ -174,22 +199,21 @@ def rounded_polyline(corners, radius, step):
         if abs(turn) < 1e-3 or abs(abs(turn) - math.pi) < 1e-3:
             line_to((x1, y1))
             continue
-        # tangent length, capped at half of either neighbouring segment
-        tangent = min(radius * math.tan(abs(turn) / 2.0), len_in / 2.0, len_out / 2.0)
-        r = tangent / math.tan(abs(turn) / 2.0)
+        # capped at half of either neighbouring segment
+        tangent = min(distance, len_in / 2.0, len_out / 2.0)
         start = (x1 - u_in[0] * tangent, y1 - u_in[1] * tangent)
         line_to(start)
-        side = 1.0 if turn > 0 else -1.0
-        cx = start[0] - side * u_in[1] * r
-        cy = start[1] + side * u_in[0] * r
-        a0 = math.atan2(start[1] - cy, start[0] - cx)
-        n = max(2, int(math.ceil(abs(turn) * r / step)))
-        for k in range(1, n + 1):
-            a = a0 + turn * k / n
-            points.append((cx + r * math.cos(a), cy + r * math.sin(a)))
+        for lx, ly in corner_curve(turn, tangent, step, smoothness):
+            points.append((start[0] + lx * u_in[0] - ly * u_in[1],
+                           start[1] + lx * u_in[1] + ly * u_in[0]))
     line_to(corners[-1])
+    return with_headings(points)
 
+
+def with_headings(points):
+    """[(x, y)] -> [(x, y, yaw)], yaw pointing at the next point (last keeps the previous)."""
     poses = []
+    yaw = 0.0
     for i, (x, y) in enumerate(points):
         if i + 1 < len(points):
             nx, ny = points[i + 1]
@@ -222,9 +246,11 @@ class CourseRunner(Node):
     def __init__(self, args):
         super().__init__('course_runner')
         self.declare_parameter('frame_id', 'map')
-        self.declare_parameter('cell_size', 0.60)
-        self.declare_parameter('a_center_x', 1.725)
-        self.declare_parameter('a_center_y', 2.905)
+        # Square pitch; stretched from the map's 0.60 m to the 0.62 m measured on
+        # the course, about the course centre (the corner shared by I, J, O, P).
+        self.declare_parameter('cell_size', 0.62)
+        self.declare_parameter('center_x', 0.825)
+        self.declare_parameter('center_y', 1.405)
         self.declare_parameter('north_yaw', 0.0)
         self.declare_parameter('xy_stddev', 0.15)
         self.declare_parameter('yaw_stddev', 0.5)
@@ -232,12 +258,21 @@ class CourseRunner(Node):
         self.declare_parameter('spin_time_allowance', 25.0)
         # grid planner
         self.declare_parameter('base_frame', 'base_link')
-        self.declare_parameter('corner_radius', 0.30)
+        self.declare_parameter('corner_distance', 0.30)
+        self.declare_parameter('corner_smoothness', 0.5)
         self.declare_parameter('path_step', 0.025)
         self.declare_parameter('turn_penalty', 0.5)
         self.declare_parameter('stop_seconds', 3.5)
-        self.declare_parameter('align_min_angle', 0.20)
+        # c2bb18f used 0.04 rad x 3 tries: tighter than this skid-steer can turn
+        # (Spin's slowest command still overshoots ~5 deg), so it kept turning.
+        self.declare_parameter('align_tolerance', 0.10)
+        self.declare_parameter('align_attempts', 2)
         self.declare_parameter('align_time_allowance', 10.0)
+        self.declare_parameter('merge_distance', 0.50)
+        # AMCL convergence (no-motion updates while stopped)
+        self.declare_parameter('settle_yaw_std', 0.04)
+        self.declare_parameter('settle_xy_std', 0.03)
+        self.declare_parameter('settle_timeout', 4.0)
         self.declare_parameter('blocked_cost', 99)
         self.declare_parameter('replan_attempts', 3)
         self.declare_parameter('controller_id', 'FollowPath')
@@ -246,20 +281,31 @@ class CourseRunner(Node):
         param = lambda name: self.get_parameter(name).value
         self.frame_id = str(param('frame_id'))
         self.cell = float(param('cell_size'))
-        self.a_x = float(param('a_center_x'))
-        self.a_y = float(param('a_center_y'))
         self.north_yaw = float(param('north_yaw'))
+        # square A centre: 1.5 squares North and 2.5 squares West of the centre
+        theta = self.north_yaw
+        north = (math.cos(theta), math.sin(theta))
+        west = (-math.sin(theta), math.cos(theta))
+        to_a = ((ROWS - 1) / 2.0 * self.cell, (COLS - 1) / 2.0 * self.cell)
+        self.a_x = float(param('center_x')) + to_a[0] * north[0] + to_a[1] * west[0]
+        self.a_y = float(param('center_y')) + to_a[0] * north[1] + to_a[1] * west[1]
         self.xy_std = float(param('xy_stddev'))
         self.yaw_std = float(param('yaw_stddev'))
         self.spin_angle = float(param('spin_angle'))
         self.spin_allowance = float(param('spin_time_allowance'))
         self.base_frame = str(param('base_frame'))
-        self.corner_radius = float(param('corner_radius'))
+        self.corner_distance = float(param('corner_distance'))
+        self.corner_smoothness = float(param('corner_smoothness'))
         self.path_step = float(param('path_step'))
         self.turn_penalty = float(param('turn_penalty'))
         self.stop_seconds = float(param('stop_seconds'))
-        self.align_min_angle = float(param('align_min_angle'))
+        self.align_tolerance = float(param('align_tolerance'))
+        self.align_attempts = int(param('align_attempts'))
         self.align_allowance = float(param('align_time_allowance'))
+        self.merge_distance = float(param('merge_distance'))
+        self.settle_yaw_std = float(param('settle_yaw_std'))
+        self.settle_xy_std = float(param('settle_xy_std'))
+        self.settle_timeout = float(param('settle_timeout'))
         self.blocked_cost = int(param('blocked_cost'))
         self.replan_attempts = int(param('replan_attempts'))
         self.controller_id = str(param('controller_id'))
@@ -301,6 +347,9 @@ class CourseRunner(Node):
         # map->odom, i.e. after the initial pose; this service says when it is done.
         self.nav_active_client = self.create_client(
             Trigger, 'lifecycle_manager_navigation/is_active')
+        # AMCL runs a filter update without motion when asked (normally it only
+        # updates after moving update_min_d / update_min_a).
+        self.nomotion_client = self.create_client(Empty, 'request_nomotion_update')
         self.create_timer(1.0, self.publish_markers)
 
     # ------------------------------------------------------------ geometry
@@ -588,7 +637,8 @@ class CourseRunner(Node):
 
     def leg_poses(self, route):
         corners = [self.square_center(letter) for letter in route]
-        return rounded_polyline(corners, self.corner_radius, self.path_step)
+        return rounded_polyline(
+            corners, self.corner_distance, self.path_step, self.corner_smoothness)
 
     def plan_leg(self, here, goal):
         """Grid route here -> goal and its path, avoiding blocked squares."""
@@ -616,22 +666,100 @@ class CourseRunner(Node):
     def publish_path(self, poses):
         self.path_pub.publish(self.make_path(poses))
 
+    def amcl_spread(self):
+        """(yaw std, larger of x/y std) of the last AMCL pose, or None."""
+        if self.amcl_msg is None:
+            return None
+        cov = self.amcl_msg.pose.covariance
+        return (math.sqrt(max(cov[35], 0.0)),
+                math.sqrt(max(cov[0], cov[7], 0.0)))
+
+    def settle_localisation(self, budget):
+        """While stopped, ask AMCL for no-motion updates until its spread is
+        below settle_yaw_std / settle_xy_std or `budget` seconds pass.
+
+        AMCL normally only updates after moving 5 cm / 0.1 rad, so the heading
+        it had when the robot stopped (std ~0.17 rad = 10 deg after the start
+        spin in field test 1) is what the next leg would be aligned to. A few
+        extra scans while standing still tighten it.
+        """
+        end = time.monotonic() + budget
+        if not self.nomotion_client.wait_for_service(timeout_sec=0.2):
+            return self.amcl_spread()
+        while time.monotonic() < end:
+            sent = time.monotonic()
+            self.nomotion_client.call_async(Empty.Request())
+            # the update happens on the next scan; wait for its /amcl_pose
+            while time.monotonic() < min(end, sent + 1.0):
+                rclpy.spin_once(self, timeout_sec=0.05)
+                if self.amcl_stamp is not None and self.amcl_stamp > sent:
+                    break
+            spread = self.amcl_spread()
+            if spread is not None and spread[0] <= self.settle_yaw_std \
+                    and spread[1] <= self.settle_xy_std:
+                return spread
+        return self.amcl_spread()
+
     def turn_to(self, target_yaw):
-        """Turn on the spot (behavior_server Spin, which slows down before the
-        target) so RPP starts each leg already facing along it."""
+        """Turn on the spot onto target_yaw (behavior_server Spin, which slows
+        down before the target), re-checking the heading after each turn so the
+        robot starts each leg along the compass axis, not a few degrees off."""
+        for _ in range(self.align_attempts):
+            pose = self.robot_pose()
+            if pose is None:
+                return
+            delta = wrap_angle(target_yaw - pose[2])
+            if abs(delta) < self.align_tolerance:
+                return
+            self.get_logger().info('turning %.1f deg onto the leg' % math.degrees(delta))
+            goal = Spin.Goal()
+            goal.target_yaw = delta
+            goal.time_allowance = Duration(sec=int(self.align_allowance))
+            result = self._send(self.spin_client, goal, 'spin')
+            if result is None or result.status != GoalStatus.STATUS_SUCCEEDED:
+                self.get_logger().warn('turn onto the leg did not finish')
+            self.settle_localisation(1.0)
         pose = self.robot_pose()
-        if pose is None:
-            return
-        delta = wrap_angle(target_yaw - pose[2])
-        if abs(delta) < self.align_min_angle:
-            return
-        self.get_logger().info('turning %.0f deg onto the leg' % math.degrees(delta))
-        goal = Spin.Goal()
-        goal.target_yaw = delta
-        goal.time_allowance = Duration(sec=int(self.align_allowance))
-        result = self._send(self.spin_client, goal, 'spin')
-        if result is None or result.status != GoalStatus.STATUS_SUCCEEDED:
-            self.get_logger().warn('turn onto the leg did not finish, RPP will correct')
+        if pose is not None:
+            self.get_logger().warn(
+                'still %.1f deg off the leg heading, RPP will correct'
+                % math.degrees(wrap_angle(target_yaw - pose[2])))
+
+    def merge_onto_path(self, poses):
+        """Start the leg where the robot actually is.
+
+        The robot stops up to xy_goal_tolerance (4 cm) off a square centre. The
+        path keeps the robot's sideways offset at the start and blends it to
+        zero along the first straight (cosine blend over merge_distance), so
+        the robot drives off along the compass axis and eases onto the centre
+        line, instead of pure pursuit aiming it diagonally at the centre line.
+        """
+        pose = self.robot_pose()
+        if pose is None or len(poses) < 2:
+            return poses
+        x0, y0, yaw0 = poses[0]
+        ux, uy = math.cos(yaw0), math.sin(yaw0)
+        lateral = -(pose[0] - x0) * uy + (pose[1] - y0) * ux
+        if abs(lateral) < 0.005 or abs(lateral) > self.cell / 2.0:
+            return poses
+        straight = 0
+        while straight + 1 < len(poses) and \
+                abs(wrap_angle(poses[straight + 1][2] - yaw0)) < 1e-3:
+            straight += 1
+        last = poses[straight]
+        length = min(self.merge_distance,
+                     (last[0] - x0) * ux + (last[1] - y0) * uy)
+        if length < 0.10:
+            return poses
+        points = []
+        for x, y, _ in poses:
+            s = (x - x0) * ux + (y - y0) * uy
+            if len(points) <= straight and s < length:
+                w = 0.5 * (1.0 + math.cos(math.pi * max(s, 0.0) / length))
+                points.append((x - w * lateral * uy, y + w * lateral * ux))
+            else:
+                points.append((x, y))
+        return with_headings(points)
 
     def follow_path(self, poses):
         goal = FollowPath.Goal()
@@ -661,8 +789,12 @@ class CourseRunner(Node):
                 break
             self.get_logger().info(
                 'route %s (attempt %d)' % (' -> '.join(route), attempt))
+            # face along the compass axis of the first straight; only once per
+            # leg, so a failed leg does not start another round of turning
+            if attempt == 1:
+                self.turn_to(poses[0][2])
+            poses = self.merge_onto_path(poses)
             self.publish_path(poses)
-            self.turn_to(poses[0][2])
             if self.follow_path(poses):
                 return True
             self.get_logger().warn('follow_path %s -> %s failed' % (here, goal))
@@ -692,7 +824,10 @@ class CourseRunner(Node):
             if self.drive_leg(here, goal):
                 self.log_stop_error(goal)
                 here = goal
-                self.pause(self.stop_seconds)
+                # use the compulsory stop to sharpen AMCL for the next leg
+                stop_end = time.monotonic() + self.stop_seconds
+                self.settle_localisation(self.stop_seconds)
+                self.pause(max(0.0, stop_end - time.monotonic()))
                 continue
             self.get_logger().error('could not reach %s' % goal)
             missed.append(goal)
@@ -763,6 +898,9 @@ def main(argv=None):
         if node.do_spin:
             node.localisation_spin()
             node.log_amcl_spread('after spin')
+        if args.planner == 'grid':
+            node.settle_localisation(node.settle_timeout)
+            node.log_amcl_spread('after settling')
         t1 = time.monotonic()
         if args.planner == 'grid':
             ok = node.run_grid()

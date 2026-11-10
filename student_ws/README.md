@@ -146,10 +146,14 @@ stops 3.5 s on it.
 
 By default (`--planner grid`) each leg is planned with A* over the 24 squares
 (walls from the L08b brief, plus squares the global costmap shows as blocked).
-The route goes through square centres, rounds the corner (0.30 m arc) in any
-square it only passes through, and goes straight in to the goal centre. The
-path is sent straight to the RPP controller (`follow_path`) and shown on
-`/plan`. The robot turns on the spot onto each leg first. If a leg fails it is
+The route goes through square centres, with a smooth turn (steering ramps
+in and out, starting 0.30 m before the centre) in any square it only passes
+through, and goes straight in to the goal centre. The path is sent straight
+to the RPP controller (`follow_path`) and shown on `/plan`. Before each leg the
+robot turns on the spot (at most twice) until it is within ~6 deg of the compass axis, and
+AMCL is refined with no-motion updates during each 3.5 s stop. Squares are
+spaced 0.62 m (measured course) about the course centre; `cell_size` in
+`course.yaml` sets this. If a leg fails it is
 replanned, and the last resort is Nav2's planner (`navigate_to_pose`). If you
 know which square holds the obstacle, add `--avoid P`. To use the previous
 behaviour (Nav2 waypoint follower with NavFn A*), add `--planner nav2`.
