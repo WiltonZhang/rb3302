@@ -598,7 +598,18 @@ class CourseRunner(Node):
                 self.get_logger().warn(
                     'no grid route %s -> %s avoiding %s'
                     % (here, goal, ','.join(sorted(self.blocked)) or '-'))
-                return None, None
+                if not self.blocked:
+                    return None, None
+                # A false mark (e.g. on D, the only way out of dead-end J)
+                # must not trap the robot: forget the blocked squares and use
+                # the walls only. RPP collision detection still stops the
+                # robot if the square really is blocked.
+                self.get_logger().warn('forgetting blocked squares, walls only')
+                self.blocked.clear()
+                route = grid_astar(here, goal, (), self.turn_penalty)
+                if route is None:
+                    return None, None
+                return route, self.leg_poses(route)
             poses = self.leg_poses(route)
             bad = self.first_blocked_square(poses, ignore={here, goal})
             if bad is None:
