@@ -61,7 +61,7 @@ import time
 import rclpy
 from action_msgs.msg import GoalStatus
 from builtin_interfaces.msg import Duration
-from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
 from nav2_msgs.action import FollowPath, FollowWaypoints, NavigateToPose, Spin
 from nav2_msgs.srv import ClearEntireCostmap
 from nav_msgs.msg import OccupancyGrid, Path
@@ -351,6 +351,19 @@ class CourseRunner(Node):
         self.declare_parameter('goal_checker_id', 'goal_checker')
         self.declare_parameter('centre_goal_checker_id', 'goal_checker')
         self.declare_parameter('centre_goal_extension', 0.08)
+        # fast exit from a dead end (H, J, K, N) after it has been centred
+        self.declare_parameter('fast_exit', True)
+        self.declare_parameter('cmd_vel_topic', '/cmd_vel')
+        self.declare_parameter('exit_linear_speed', 0.44)
+        self.declare_parameter('exit_linear_accel', 0.6)
+        self.declare_parameter('exit_turn_speed', 3.0)
+        self.declare_parameter('exit_turn_accel', 6.0)
+        self.declare_parameter('exit_turn_min_speed', 1.0)
+        self.declare_parameter('exit_turn_tolerance', 0.05)
+        self.declare_parameter('exit_turn_clearance', 0.155)
+        self.declare_parameter('exit_side_clearance', 0.125)
+        self.declare_parameter('exit_front_margin', 0.05)
+        self.declare_parameter('exit_timeout', 6.0)
 
         param = lambda name: self.get_parameter(name).value
         self.frame_id = str(param('frame_id'))
@@ -389,6 +402,18 @@ class CourseRunner(Node):
         self.goal_checker_id = str(param('goal_checker_id'))
         self.centre_goal_checker_id = str(param('centre_goal_checker_id'))
         self.centre_goal_extension = float(param('centre_goal_extension'))
+        self.fast_exit = bool(param('fast_exit'))
+        self.exit_linear_speed = float(param('exit_linear_speed'))
+        self.exit_linear_accel = float(param('exit_linear_accel'))
+        self.exit_turn_speed = float(param('exit_turn_speed'))
+        self.exit_turn_accel = float(param('exit_turn_accel'))
+        self.exit_turn_min_speed = float(param('exit_turn_min_speed'))
+        self.exit_turn_tolerance = float(param('exit_turn_tolerance'))
+        self.exit_turn_clearance = float(param('exit_turn_clearance'))
+        self.exit_side_clearance = float(param('exit_side_clearance'))
+        self.exit_front_margin = float(param('exit_front_margin'))
+        self.exit_timeout = float(param('exit_timeout'))
+        self.cmd_pub = self.create_publisher(Twist, str(param('cmd_vel_topic')), 10)
 
         self.start = args.start
         self.bearing_deg = args.bearing
@@ -1056,12 +1081,148 @@ class CourseRunner(Node):
             % (1000.0 * math.hypot(pose[0] - x, pose[1] - y), letter,
                pose[0] - x, pose[1] - y))
 
+    def scan_points_base(self):
+        """Latest LiDAR end points as (x, y) in base_frame, or None."""
+        scan = self.scan_msg
+        if scan is None or self.tf_buffer is None:
+            return None
+        try:
+            t = self.tf_buffer.lookup_transform(
+                self.base_frame, scan.header.frame_id, Time())
+        except TF_ERRORS:
+            return None
+        tx, ty = t.transform.translation.x, t.transform.translation.y
+        q = t.transform.rotation
+        r00 = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        r01 = 2.0 * (q.x * q.y - q.z * q.w)
+        r10 = 2.0 * (q.x * q.y + q.z * q.w)
+        r11 = 1.0 - 2.0 * (q.x * q.x + q.z * q.z)
+        points = []
+        for i, r in enumerate(scan.ranges):
+            if not math.isfinite(r) or not max(scan.range_min, 0.05) <= r <= scan.range_max:
+                continue
+            a = scan.angle_min + i * scan.angle_increment
+            lx, ly = r * math.cos(a), r * math.sin(a)
+            points.append((tx + r00 * lx + r01 * ly, ty + r10 * lx + r11 * ly))
+        return points
+
+    def send_cmd(self, linear, angular):
+        msg = Twist()
+        msg.linear.x = float(linear)
+        msg.angular.z = float(angular)
+        self.cmd_pub.publish(msg)
+
+    def stop_robot(self):
+        for _ in range(3):
+            self.send_cmd(0.0, 0.0)
+            rclpy.spin_once(self, timeout_sec=0.02)
+
+    def exit_turn(self, target_yaw):
+        """Turn on the spot to target_yaw at up to exit_turn_speed, slowing as
+        sqrt(2 x exit_turn_accel x angle left), never below exit_turn_min_speed.
+        Stops (False) if any LiDAR point is inside exit_turn_clearance of
+        base_link, i.e. a footprint corner could touch a wall while turning."""
+        end = time.monotonic() + self.exit_timeout
+        while time.monotonic() < end:
+            rclpy.spin_once(self, timeout_sec=0.05)
+            pose = self.robot_pose()
+            points = self.scan_points_base()
+            if pose is None or points is None:
+                break
+            if any(math.hypot(px, py) < self.exit_turn_clearance for px, py in points):
+                self.stop_robot()
+                self.get_logger().warn('fast exit: wall within %.0f mm, not turning'
+                                       % (1000.0 * self.exit_turn_clearance))
+                return False
+            err = wrap_angle(target_yaw - pose[2])
+            if abs(err) < self.exit_turn_tolerance:
+                self.stop_robot()
+                return True
+            rate = min(self.exit_turn_speed, max(
+                self.exit_turn_min_speed, math.sqrt(2.0 * self.exit_turn_accel * abs(err))))
+            self.send_cmd(0.0, math.copysign(rate, err))
+        self.stop_robot()
+        return False
+
+    def exit_drive(self, tx, ty):
+        """Drive straight to (tx, ty) at up to exit_linear_speed, ramping up and
+        down at exit_linear_accel and holding the heading. Stops (False) if a
+        LiDAR point lies in a corridor exit_side_clearance either side ahead,
+        within the stopping distance plus exit_front_margin."""
+        start = self.robot_pose()
+        if start is None:
+            return False
+        ux, uy = tx - start[0], ty - start[1]
+        length = math.hypot(ux, uy)
+        if length < 1e-3:
+            return True
+        ux, uy = ux / length, uy / length
+        v = 0.0
+        last = time.monotonic()
+        end = last + self.exit_timeout
+        while time.monotonic() < end:
+            rclpy.spin_once(self, timeout_sec=0.05)
+            now = time.monotonic()
+            dt, last = now - last, now
+            pose = self.robot_pose()
+            points = self.scan_points_base()
+            if pose is None or points is None:
+                break
+            left = (tx - pose[0]) * ux + (ty - pose[1]) * uy
+            if left < 0.02:
+                self.stop_robot()
+                return True
+            stop_dist = v * v / (2.0 * self.exit_linear_accel)
+            reach = 0.095 + stop_dist + self.exit_front_margin
+            if any(0.0 < px < reach and abs(py) < self.exit_side_clearance
+                   for px, py in points):
+                self.stop_robot()
+                self.get_logger().warn('fast exit: something within %.0f mm ahead, stopping'
+                                       % (1000.0 * reach))
+                return False
+            v = min(self.exit_linear_speed, v + self.exit_linear_accel * dt,
+                    math.sqrt(2.0 * self.exit_linear_accel * left))
+            heading_err = wrap_angle(math.atan2(ty - pose[1], tx - pose[0]) - pose[2])
+            self.send_cmd(max(v, 0.05), max(-1.0, min(1.0, 2.0 * heading_err)))
+        self.stop_robot()
+        return False
+
+    def leave_dead_end_fast(self, here):
+        """After centring in a dead end (H, J, K, N), turn to face its only exit
+        and drive straight onto the exit square's centre at twice the normal
+        speeds (exit_turn_speed, exit_linear_speed), checking the LiDAR for
+        walls all the way. Returns the square the robot ends in; the normal leg
+        carries on from there. Any doubt (wall too close, no scan or TF) stops
+        it and leaves the rest to the normal leg."""
+        exits = [other for other, _ in neighbours(here, ())]
+        if not self.fast_exit or len(exits) != 1:
+            return here
+        exit_letter = exits[0]
+        pose = self.robot_pose()
+        if pose is None:
+            return here
+        tx, ty = self.square_center(exit_letter)
+        self.get_logger().info('fast exit from %s into %s' % (here, exit_letter))
+        if not self.exit_turn(math.atan2(ty - pose[1], tx - pose[0])):
+            return here
+        ok = self.exit_drive(tx, ty)
+        pose = self.robot_pose()
+        if ok:
+            return exit_letter
+        if pose is not None:
+            return self.cell_of(pose[0], pose[1]) or here
+        return here
+
     def run_grid(self):
         missed = []
         here = self.start
+        centred = False
         for i, goal in enumerate(self.goals, 1):
             self.get_logger().info('heading to %d/%d: %s' % (i, len(self.goals), goal))
-            reached = self.drive_leg(here, goal)
+            if centred and goal != here:
+                here = self.leave_dead_end_fast(here)
+            centred = False
+            reached = here == goal or self.drive_leg(here, goal)
             pose = self.robot_pose()
             if not reached and pose is not None and self.cell_of(pose[0], pose[1]) == goal:
                 self.get_logger().warn('leg failed but the robot is in %s' % goal)
@@ -1070,6 +1231,7 @@ class CourseRunner(Node):
                 self.centre_on(goal)
                 self.log_stop_error(goal)
                 here = goal
+                centred = True
                 self.pause(self.stop_seconds)
                 continue
             self.get_logger().error('could not reach %s' % goal)

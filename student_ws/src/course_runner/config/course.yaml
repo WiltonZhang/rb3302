@@ -34,6 +34,21 @@ course_runner:
     align_time_allowance: 6.0   # give up a stuck turn on the spot after this (s)
     goal_extension: 0.08  # end each leg's path this far past the centre (keep < ~0.10 for dead ends)
     centre_goal_extension: 0.08   # final drive onto the centre ends this far past it (= its checker's xy tolerance)
+    # Leaving a dead end (H, J, K, N) after centring on it: turn to face the exit and
+    # drive straight onto the exit square's centre at twice the normal speeds, with
+    # its own LiDAR wall checks; the normal leg carries on from the exit square.
+    fast_exit: true
+    cmd_vel_topic: /cmd_vel
+    exit_linear_speed: 0.44     # 2 x desired_linear_vel 0.22 (m/s)
+    exit_linear_accel: 0.6      # ramp up/down (m/s2), as the velocity smoother
+    exit_turn_speed: 3.0        # 2 x Spin max_rotational_vel 1.5; driver clamps at 3.0 (rad/s)
+    exit_turn_accel: 6.0        # 2 x Spin rotational_acc_lim 3.0: slows as sqrt(2 x 6 x angle left)
+    exit_turn_min_speed: 1.0    # below ~1.0 rad/s the skid-steer stalls
+    exit_turn_tolerance: 0.05   # stop turning within this of the exit heading (rad)
+    exit_turn_clearance: 0.155  # no LiDAR point closer than this to base_link when turning (corner 0.134 + 2 cm)
+    exit_side_clearance: 0.125  # corridor half-width checked ahead while driving out (0.095 + 3 cm)
+    exit_front_margin: 0.05     # extra distance beyond the stopping distance checked ahead (m)
+    exit_timeout: 6.0           # give up turning or driving after this (s)
     centre_tolerance: 0.06    # get onto a centre if further off (m); 0.06 skips extra start-up turns from hand placement
     centre_ahead_angle: 1.05  # ...and only if the centre is within 60 deg of the heading
     centre_turn_angle: 0.785  # before a turn on the spot bigger than this (rad), get onto the centre first
