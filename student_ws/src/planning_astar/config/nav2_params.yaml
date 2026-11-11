@@ -7,7 +7,7 @@
 #   - wheel odometry with its sign restored by course_runner's odom_sign node:
 #       ros2 launch planning_rpp planning.launch.py raw_odom_topic:=/odom/raw_signed
 #     The board reports wheel speed without a sign, so turning on the spot and
-#     reversing used to read as driving forward (see docs/claude-handoff/TUNING_REVIEW.md).
+#     reversing used to read as driving forward.
 # Base: the 116bdf3 values. Every value changed from 116bdf3 says so in its comment.
 
 amcl:

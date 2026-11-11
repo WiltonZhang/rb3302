@@ -32,9 +32,11 @@ These are the owner's (Wilton's) standing rules for this repository. Follow them
 ## Reference material
 - Course briefs: `L08b_Project.pdf` (course + scoring) and `L08c_RB3302_Final_Project.pdf`
   (packages + steps). They are NOT in this repo (it is public); the owner keeps them locally.
-  Their requirements are summarised in `docs/claude-handoff/HANDOFF.md`.
-- Full history of decisions, field-test logs and current tuning:
-  `docs/claude-handoff/HANDOFF.md`. Read it before changing anything.
+- Current tuning and the reason for each value: the comments in
+  `student_ws/src/planning_rpp/config/nav2_params.yaml` (the `planning_astar` copy is identical).
+  Read them before changing anything. Earlier decisions are in the git history.
+- No separate docs: tuning changes and their explanations go straight into `nav2_params.yaml`
+  (rpp + astar), never into a separate document.
 
 ## Git
 - Work on a branch, open a PR into `main`; the owner merges.
