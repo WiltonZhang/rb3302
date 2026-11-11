@@ -1056,25 +1056,6 @@ class CourseRunner(Node):
             % (1000.0 * math.hypot(pose[0] - x, pose[1] - y), letter,
                pose[0] - x, pose[1] - y))
 
-    def turn_for_next_leg(self, here, next_goal):
-        """Turn on the spot onto the next leg's first heading straight after
-        arriving, while the robot is still on the centre, and before the stop.
-
-        Turning after the 3.5 s stop started from wherever AMCL had drifted to
-        meanwhile (66 mm off in dead-end K), and the stop after the turn now
-        also lets AMCL settle before the leg starts. drive_leg plans the leg
-        again afterwards and only adds a small correction turn if needed."""
-        route = grid_astar(here, next_goal, self.blocked, self.turn_penalty)
-        if route is None:
-            route = grid_astar(here, next_goal, (), self.turn_penalty)
-        if route is None or len(route) < 2:
-            return
-        poses = self.leg_poses(route)
-        if poses:
-            self.get_logger().info('turning onto the leg %s -> %s before the stop'
-                                   % (here, next_goal))
-            self.turn_to(poses[0][2])
-
     def run_grid(self):
         missed = []
         here = self.start
@@ -1089,8 +1070,6 @@ class CourseRunner(Node):
                 self.centre_on(goal)
                 self.log_stop_error(goal)
                 here = goal
-                if i < len(self.goals):
-                    self.turn_for_next_leg(goal, self.goals[i])
                 self.pause(self.stop_seconds)
                 continue
             self.get_logger().error('could not reach %s' % goal)
