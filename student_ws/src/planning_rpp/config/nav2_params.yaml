@@ -150,14 +150,11 @@ local_costmap:
       width: 2
       height: 2
       resolution: 0.05
-      # A disc that covers the robot while it turns on the spot: 18 x 19 cm has a
-      # 13.1 cm half-diagonal, plus ~1 cm for where base_link really sits. With
-      # the 19 x 19 cm square footprint, paths and collision checks allowed spots
-      # where the corners swept into the wall as soon as the robot turned, as in
-      # the dead ends (friend A uses the same idea, 0.13 for a 19.4 x 16.8 cm robot).
-      # (116bdf3: 19 x 19 cm square footprint + 0.01 padding)
-      robot_radius: 0.14
-      footprint_padding: 0.0
+      # Template parameter. 18 x 19 cm measured; the length/width axis is not
+      # specified, so 19 cm is used on both axes. base_link assumed at the chassis
+      # centre. Same as 116bdf3. (template: 5 x 5 cm square)
+      footprint: "[[0.095, 0.095], [0.095, -0.095], [-0.095, -0.095], [-0.095, 0.095]]"
+      footprint_padding: 0.01
       plugins: ["obstacle_layer", "inflation_layer"]
       obstacle_layer:
         plugin: nav2_costmap_2d::ObstacleLayer
@@ -198,8 +195,9 @@ global_costmap:
       # start pose is sent. The default 60 s made Nav2 give up when the run was
       # started more than a minute after the launch (friend A's fix). (116bdf3: not set)
       initial_transform_timeout: 600.0
-      robot_radius: 0.14               # see local_costmap (116bdf3: square footprint)
-      footprint_padding: 0.0
+      # same 19 x 19 cm square as local_costmap (template: 5 x 5 cm square)
+      footprint: "[[0.095, 0.095], [0.095, -0.095], [-0.095, -0.095], [-0.095, 0.095]]"
+      footprint_padding: 0.01
       track_unknown_space: true
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
       static_layer:
