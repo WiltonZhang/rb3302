@@ -171,7 +171,7 @@ then clears the costmaps. `--localise spin` brings back the 360 deg turn and
 By default (`--planner grid`) each leg is planned with A* over the 24 squares
 (walls from the L08b brief, plus squares the global costmap shows as blocked).
 The route goes through square centres, rounds the corner (0.29 m arc) in any
-square it only passes through, and ends 3 cm past the goal centre so the robot
+square it only passes through, and ends 8 cm past the goal centre so the robot
 stops on it. The path is sent straight to the RPP controller (`follow_path`) and
 shown on `/plan`. While the robot drives, the runner watches the global costmap
 1.2 m ahead along the route: if a square on it becomes blocked (the obstacle),

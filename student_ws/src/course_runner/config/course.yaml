@@ -32,7 +32,7 @@ course_runner:
     stop_seconds: 3.5     # rule is 3 s stopped per square; 0.5 s margin
     align_min_angle: 0.20 # turn on the spot before a leg if heading is off by more (rad)
     align_time_allowance: 10.0
-    goal_extension: 0.03  # end each path this far past the centre so the robot stops on it
+    goal_extension: 0.08  # end each path this far past the centre; = xy_goal_tolerance so the robot stops on it
     centre_tolerance: 0.04    # drive forward onto a goal centre if further off (m)
     centre_ahead_angle: 1.05  # ...and only if the centre is within 60 deg of the heading
     blocked_cost: 99      # global costmap value (99 inscribed, 100 lethal) that blocks a square

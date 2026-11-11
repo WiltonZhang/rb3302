@@ -175,9 +175,9 @@ const NODES = [
   ["progress_checker.plugin", "SimpleProgressChecker", "Aborts FollowPath when the robot stops making progress.", ""],
   ["required_movement_radius / movement_time_allowance", "0.10 / 15.0", "The robot must move 10 cm within 15 s. Turning on the spot doesn't count as moving.", ""],
   ["goal_checker.plugin", "SimpleGoalChecker", "Decides when a leg is done.", ""],
-  ["xy_goal_tolerance", "0.03", "Done when the robot centre is within 3 cm of the path's last point. course_runner ends each path 3 cm past the square centre (goal_extension), so the robot stops on the centre rather than 3 cm short. Smaller lands closer, but the approach is slower and the robot shuffles more to get inside it.", ""],
+  ["xy_goal_tolerance", "0.08", "Done when the robot centre is within 8 cm of the path's last point. course_runner ends each path 8 cm past the square centre (goal_extension in course.yaml); keeping the two equal makes the robot stop on the centre without hunting. Above about 0.10 the path end gets close to the back wall in dead ends.", ""],
   ["yaw_goal_tolerance", "3.14", "Heading tolerance; 3.14 accepts any heading.", ""],
-  ["stateful", "true", "Once within 3 cm, the leg stays done while heading is checked. With 3.14 this makes no real difference.", "unused"]
+  ["stateful", "true", "Once within 8 cm, the leg stays done while heading is checked. With 3.14 this makes no real difference.", "unused"]
  ]},
  { id: "rpp", name: "FollowPath (RPP)", sub: "Regulated Pure Pursuit", use: ["run", "every run"],
    note: "RPP drives an arc towards a “carrot” point lookahead_dist ahead on the path. The regulation params slow it on tight arcs, near walls and near the goal. If the carrot is more than rotate_to_heading_min_angle off the nose, it stops and turns on the spot instead.",
@@ -186,6 +186,8 @@ const NODES = [
   ["lookahead_dist", "0.25", "Distance to the carrot. Shorter follows the path and corners more tightly but reacts more to small pose jumps (wobble). Longer is smoother but cuts corners towards walls.", ""],
   ["min_lookahead_dist / max_lookahead_dist / lookahead_time", "0.15 / 0.35 / 1.5", "Only for the speed-scaled lookahead (speed × time, clamped to min/max). Unused while that is off.", "unused"],
   ["use_velocity_scaled_lookahead_dist", "false", "Use the fixed lookahead_dist. The robot's measured speed is too jumpy to scale from.", ""],
+  ["use_fixed_curvature_lookahead / curvature_lookahead_dist", "true / 0.25", "Steer by a separate point a fixed 0.25 m ahead instead of the carrot, which shrinks towards the goal at the end of a path.", ""],
+  ["interpolate_curvature_after_goal", "true", "Lets that steering point continue past the goal, so the final approach doesn't swing (the oscillation turning in to the centre).", ""],
   ["rotate_to_heading_angular_vel", "1.5", "Turn rate (rad/s) for RPP's on-the-spot turns. Held without slowing until the carrot is back within 45°. 2.5 overshot; lower values stalled.", ""],
   ["transform_tolerance", "0.2", "Oldest TF data (s) RPP accepts.", ""],
   ["min_approach_linear_velocity", "0.08", "Slowest speed (m/s) near the goal. Too low creeps or stalls short of the centre; higher rolls further past it.", ""],

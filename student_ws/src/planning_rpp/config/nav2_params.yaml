@@ -89,10 +89,11 @@ controller_server:
     goal_checker:
       plugin: nav2_controller::SimpleGoalChecker
       # Scoring needs the robot over the centre label. course_runner ends every
-      # path goal_extension (3 cm) past the centre, so with this tolerance the
-      # robot stops on the centre instead of 3-4 cm short. 7f6eeaf used 0.03 in
-      # the run that "went almost perfectly". (116bdf3: 0.04)
-      xy_goal_tolerance: 0.03
+      # path goal_extension (0.08, course.yaml) past the centre; keep the two equal
+      # and the leg ends on the centre. 0.2 on the robot ended legs ~17 cm short
+      # and skipped course_runner's re-centring; 0.03 hunted near the goal.
+      # (was 0.03; 116bdf3: 0.04)
+      xy_goal_tolerance: 0.08
       # Orientation is not scored -> do not waste time turning at each square.
       yaw_goal_tolerance: 3.14
       stateful: true
@@ -109,6 +110,13 @@ controller_server:
       max_lookahead_dist: 0.35
       lookahead_time: 1.5
       use_velocity_scaled_lookahead_dist: false
+      # Near the end of a path the steering point stops at the goal and gets ever
+      # closer, so small sideways errors became sharp steering (the swing as it
+      # turned in to the centre). These keep the curvature point a fixed 0.25 m
+      # ahead, projected past the goal. Added; Jazzy RPP options.
+      use_fixed_curvature_lookahead: true
+      curvature_lookahead_dist: 0.25
+      interpolate_curvature_after_goal: true
       # The turn rate that ran on the robot. 1.2 / 1.0 / 0.8 (3023d14, dbacc72,
       # 479a950) stalled near tyre scrub; 2.5 (d4c9121) overshot every turn.
       rotate_to_heading_angular_vel: 1.5
