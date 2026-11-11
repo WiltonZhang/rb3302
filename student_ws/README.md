@@ -180,12 +180,7 @@ drives forward onto the centre if it stopped more than 3 cm off, stops 3.5 s,
 and then turns on the spot onto the next leg there, on the centre and clear of
 the walls. Before any turn on the spot bigger than 45°, if the robot is still
 more than 3 cm off the centre (e.g. off to one side), it first turns a little
-to face the centre, drives onto it, and only then makes the big turn. In a dead end
-(H, J, K, N) facing its closed end, it instead backs straight out one square
-(Nav2 `backup`) and turns there. A square counts as holding the obstacle only
-when the global costmap has lethal marks inside it more than 8 cm from any
-mapped wall, so wall marks and the obstacle's inflation never block the
-square next door. If a leg fails it is replanned, and the last resort is Nav2's planner
+to face the centre, drives onto it, and only then makes the big turn. If a leg fails it is replanned, and the last resort is Nav2's planner
 (`navigate_to_pose`). If you know which square holds the obstacle, add
 `--avoid P`. `--planner nav2` uses the Nav2 waypoint follower with NavFn A* instead.
 

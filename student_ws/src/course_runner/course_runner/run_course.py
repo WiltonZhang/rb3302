@@ -62,7 +62,7 @@ import rclpy
 from action_msgs.msg import GoalStatus
 from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
-from nav2_msgs.action import BackUp, FollowPath, FollowWaypoints, NavigateToPose, Spin
+from nav2_msgs.action import FollowPath, FollowWaypoints, NavigateToPose, Spin
 from nav2_msgs.srv import ClearEntireCostmap
 from nav_msgs.msg import OccupancyGrid, Path
 from rclpy.action import ActionClient
@@ -342,12 +342,7 @@ class CourseRunner(Node):
         self.declare_parameter('centre_ahead_angle', 1.05)
         self.declare_parameter('centre_turn_angle', 0.785)
         self.declare_parameter('centre_turn_limit', 1.75)
-        self.declare_parameter('blocked_cost', 100)
-        self.declare_parameter('obstacle_wall_clearance', 0.08)
-        self.declare_parameter('obstacle_min_cells', 2)
-        self.declare_parameter('dead_end_backout', True)
-        self.declare_parameter('backup_speed', 0.10)
-        self.declare_parameter('backup_time_allowance', 10.0)
+        self.declare_parameter('blocked_cost', 99)
         self.declare_parameter('monitor_period', 0.5)
         self.declare_parameter('monitor_distance', 1.2)
         self.declare_parameter('replan_attempts', 2)
@@ -386,11 +381,6 @@ class CourseRunner(Node):
         self.centre_turn_angle = float(param('centre_turn_angle'))
         self.centre_turn_limit = float(param('centre_turn_limit'))
         self.blocked_cost = int(param('blocked_cost'))
-        self.obstacle_wall_clearance = float(param('obstacle_wall_clearance'))
-        self.obstacle_min_cells = int(param('obstacle_min_cells'))
-        self.dead_end_backout = bool(param('dead_end_backout'))
-        self.backup_speed = float(param('backup_speed'))
-        self.backup_allowance = float(param('backup_time_allowance'))
         self.monitor_period = float(param('monitor_period'))
         self.monitor_distance = float(param('monitor_distance'))
         self.replan_attempts = int(param('replan_attempts'))
@@ -443,7 +433,6 @@ class CourseRunner(Node):
         self.waypoint_client = ActionClient(
             self, FollowWaypoints, 'follow_waypoints')
         self.spin_client = ActionClient(self, Spin, 'spin')
-        self.backup_client = ActionClient(self, BackUp, 'backup')
         # Nav2 only activates planner/controller/behaviors once AMCL publishes
         # map->odom, i.e. after the initial pose; this service says when it is done.
         self.nav_active_client = self.create_client(
@@ -836,62 +825,15 @@ class CourseRunner(Node):
             return None
         return grid.data[iy * info.width + ix]
 
-    def near_map_wall(self, x, y, clearance):
-        """True if a wall cell of the saved map (/map) is within clearance of (x, y)."""
-        grid = self.map_msg
-        if grid is None:
-            return False
-        info = grid.info
-        res = info.resolution
-        ix = int(math.floor((x - info.origin.position.x) / res))
-        iy = int(math.floor((y - info.origin.position.y) / res))
-        reach = int(math.ceil(clearance / res))
-        for j in range(max(0, iy - reach), min(info.height, iy + reach + 1)):
-            for i in range(max(0, ix - reach), min(info.width, ix + reach + 1)):
-                if grid.data[j * info.width + i] >= 65 and math.hypot(
-                        (i - ix) * res, (j - iy) * res) <= clearance:
-                    return True
-        return False
-
-    def obstacle_squares(self, ignore=()):
-        """Squares that hold an obstacle, judged by where the obstacle is.
-
-        Counts global costmap cells >= blocked_cost (lethal, i.e. a real mark,
-        not inflation) inside the square that are more than
-        obstacle_wall_clearance from any wall of the saved map, so the lidar's
-        marks of the real walls (shifted a few cm by AMCL error) and the
-        inflation of an obstacle in the next square don't count. A square needs
-        obstacle_min_cells such cells. Before, the square was
-        the one a path point happened to be in when it hit high cost, which
-        blamed Q for an obstacle in P and trapped the robot in dead-end K."""
-        grid = self.costmap
-        if grid is None:
-            return set()
-        info = grid.info
-        res = info.resolution
-        ox, oy = info.origin.position.x, info.origin.position.y
-        half = self.cell / 2.0
-        found = set()
-        for letter in LETTERS:
-            if letter in ignore:
-                continue
-            cx, cy = self.square_center(letter)
-            cx, cy = cx - self.aim_dx, cy - self.aim_dy   # true map centre
-            i0 = max(0, int(math.floor((cx - half - ox) / res)))
-            i1 = min(info.width - 1, int(math.floor((cx + half - ox) / res)))
-            j0 = max(0, int(math.floor((cy - half - oy) / res)))
-            j1 = min(info.height - 1, int(math.floor((cy + half - oy) / res)))
-            count = 0
-            for j in range(j0, j1 + 1):
-                row = j * info.width
-                for i in range(i0, i1 + 1):
-                    if grid.data[row + i] >= self.blocked_cost and not self.near_map_wall(
-                            ox + (i + 0.5) * res, oy + (j + 0.5) * res,
-                            self.obstacle_wall_clearance):
-                        count += 1
-            if count >= self.obstacle_min_cells:
-                found.add(letter)
-        return found
+    def first_blocked_square(self, poses, ignore):
+        """First square on the path where the robot centre would be in collision."""
+        for x, y, _ in poses:
+            value = self.costmap_value(x, y)
+            if value is not None and value >= self.blocked_cost:
+                letter = self.cell_of(x, y)
+                if letter is not None and letter not in ignore:
+                    return letter
+        return None
 
     def leg_poses(self, route):
         corners = [self.square_center(letter) for letter in route]
@@ -899,28 +841,32 @@ class CourseRunner(Node):
         return extend_path(poses, self.goal_extension, self.path_step)
 
     def plan_leg(self, here, goal):
-        """Grid route here -> goal and its path, avoiding squares that hold an
-        obstacle (obstacle_squares) or were found blocked earlier."""
-        for letter in sorted(self.obstacle_squares(ignore={here, goal}) - self.blocked):
-            self.get_logger().warn(
-                'square %s holds an obstacle in the global costmap, routing around it' % letter)
-            self.blocked.add(letter)
-        route = grid_astar(here, goal, self.blocked, self.turn_penalty)
-        if route is None:
-            self.get_logger().warn(
-                'no grid route %s -> %s avoiding %s'
-                % (here, goal, ','.join(sorted(self.blocked)) or '-'))
-            if not self.blocked:
-                return None, None
-            # A false mark must not trap the robot: forget the blocked squares
-            # and use the walls only. The leg monitor and RPP collision
-            # detection still stop the robot if a square really is blocked.
-            self.get_logger().warn('forgetting blocked squares, walls only')
-            self.blocked.clear()
-            route = grid_astar(here, goal, (), self.turn_penalty)
+        """Grid route here -> goal and its path, avoiding blocked squares."""
+        while True:
+            route = grid_astar(here, goal, self.blocked, self.turn_penalty)
             if route is None:
-                return None, None
-        return route, self.leg_poses(route)
+                self.get_logger().warn(
+                    'no grid route %s -> %s avoiding %s'
+                    % (here, goal, ','.join(sorted(self.blocked)) or '-'))
+                if not self.blocked:
+                    return None, None
+                # A false mark (e.g. on D, the only way out of dead-end J)
+                # must not trap the robot: forget the blocked squares and use
+                # the walls only. The leg monitor and RPP collision detection
+                # still stop the robot if the square really is blocked.
+                self.get_logger().warn('forgetting blocked squares, walls only')
+                self.blocked.clear()
+                route = grid_astar(here, goal, (), self.turn_penalty)
+                if route is None:
+                    return None, None
+                return route, self.leg_poses(route)
+            poses = self.leg_poses(route)
+            bad = self.first_blocked_square(poses, ignore={here, goal})
+            if bad is None:
+                return route, poses
+            self.get_logger().warn(
+                'square %s is blocked in the global costmap, routing around it' % bad)
+            self.blocked.add(bad)
 
     def make_path(self, poses):
         path = Path()
@@ -967,9 +913,9 @@ class CourseRunner(Node):
             self.get_logger().warn('turn onto the leg did not finish, RPP will correct')
 
     def path_monitor(self, poses, goal):
-        """Callable for _send: the first square on the route ahead of the robot
-        (within monitor_distance along the path) that now holds an obstacle
-        (obstacle_squares), seen on two checks in a row; None while clear."""
+        """Callable for _send: the first square ahead of the robot (within
+        monitor_distance along the path) that the global costmap now shows as
+        blocked, seen on two checks in a row; None while the way is clear."""
         state = {'index': 0, 'seen': {}}
 
         def check():
@@ -984,7 +930,6 @@ class CourseRunner(Node):
                     best, best_d = k, d
             state['index'] = best
             here = self.cell_of(pose[0], pose[1])
-            ahead = []
             travelled = 0.0
             for k in range(best, len(poses)):
                 if k > best:
@@ -992,16 +937,16 @@ class CourseRunner(Node):
                                             poses[k][1] - poses[k - 1][1])
                 if travelled > self.monitor_distance:
                     break
+                value = self.costmap_value(poses[k][0], poses[k][1])
+                if value is None or value < self.blocked_cost:
+                    continue
                 letter = self.cell_of(poses[k][0], poses[k][1])
-                if letter is not None and letter not in (here, goal) and letter not in ahead:
-                    ahead.append(letter)
-            occupied = self.obstacle_squares(ignore={here, goal}) if ahead else set()
-            for letter in ahead:
-                if letter in occupied:
-                    state['seen'][letter] = state['seen'].get(letter, 0) + 1
-                    if state['seen'][letter] >= 2:
-                        return letter
-                    return None
+                if letter is None or letter in (here, goal):
+                    continue
+                state['seen'][letter] = state['seen'].get(letter, 0) + 1
+                if state['seen'][letter] >= 2:
+                    return letter
+                return None
             state['seen'].clear()
             return None
 
@@ -1101,49 +1046,6 @@ class CourseRunner(Node):
         if not self.follow_path(poses, goal_checker_id=self.centre_goal_checker_id):
             self.get_logger().warn('could not drive onto the centre of %s' % letter)
 
-    def leave_dead_end(self, here):
-        """Back straight out of a dead end (H, J, K, N: one open side) when the
-        robot faces into it, instead of turning 180 deg between three walls.
-
-        Lines the rear up with the exit square's centre (a small turn), then
-        reverses one square with Nav2 BackUp (odometry-measured; needs
-        odom_sign so reversing reads as reversing). Returns the square the
-        robot is in afterwards; the next leg then turns there, with room."""
-        if not self.dead_end_backout:
-            return here
-        exits = [other for other, _ in neighbours(here, ())]
-        if len(exits) != 1:
-            return here
-        exit_letter = exits[0]
-        pose = self.robot_pose()
-        if pose is None:
-            return here
-        ex, ey = self.square_center(exit_letter)
-        exit_dir = math.atan2(ey - pose[1], ex - pose[0])
-        if abs(wrap_angle(exit_dir - pose[2])) <= math.pi / 2.0:
-            return here          # already facing out: drive out forwards
-        delta = wrap_angle(exit_dir + math.pi - pose[2])
-        self.get_logger().info(
-            'backing out of dead end %s into %s' % (here, exit_letter))
-        if abs(delta) > 0.1 and not self.spin_by(delta):
-            self.get_logger().warn('could not line up with the exit of %s' % here)
-            return here
-        pose = self.robot_pose()
-        if pose is None:
-            return here
-        goal = BackUp.Goal()
-        goal.target.x = math.hypot(ex - pose[0], ey - pose[1])
-        goal.speed = self.backup_speed
-        goal.time_allowance = Duration(sec=int(self.backup_allowance))
-        result = self._send(self.backup_client, goal, 'backup')
-        pose = self.robot_pose()
-        if result is not None and result.status == GoalStatus.STATUS_SUCCEEDED:
-            return exit_letter
-        self.get_logger().warn('backing out of %s did not finish' % here)
-        if pose is not None:
-            return self.cell_of(pose[0], pose[1]) or here
-        return here
-
     def log_stop_error(self, letter):
         pose = self.robot_pose()
         if pose is None:
@@ -1159,9 +1061,7 @@ class CourseRunner(Node):
         here = self.start
         for i, goal in enumerate(self.goals, 1):
             self.get_logger().info('heading to %d/%d: %s' % (i, len(self.goals), goal))
-            if goal != here:
-                here = self.leave_dead_end(here)
-            reached = here == goal or self.drive_leg(here, goal)
+            reached = self.drive_leg(here, goal)
             pose = self.robot_pose()
             if not reached and pose is not None and self.cell_of(pose[0], pose[1]) == goal:
                 self.get_logger().warn('leg failed but the robot is in %s' % goal)
