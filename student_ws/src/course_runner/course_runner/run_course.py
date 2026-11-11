@@ -349,6 +349,8 @@ class CourseRunner(Node):
         self.declare_parameter('server_timeout', 10.0)
         self.declare_parameter('controller_id', 'FollowPath')
         self.declare_parameter('goal_checker_id', 'goal_checker')
+        self.declare_parameter('centre_goal_checker_id', 'precise_goal_checker')
+        self.declare_parameter('centre_goal_extension', 0.03)
 
         param = lambda name: self.get_parameter(name).value
         self.frame_id = str(param('frame_id'))
@@ -385,6 +387,8 @@ class CourseRunner(Node):
         self.server_timeout = float(param('server_timeout'))
         self.controller_id = str(param('controller_id'))
         self.goal_checker_id = str(param('goal_checker_id'))
+        self.centre_goal_checker_id = str(param('centre_goal_checker_id'))
+        self.centre_goal_extension = float(param('centre_goal_extension'))
 
         self.start = args.start
         self.bearing_deg = args.bearing
@@ -948,11 +952,11 @@ class CourseRunner(Node):
 
         return check
 
-    def follow_path(self, poses, monitor=None):
+    def follow_path(self, poses, monitor=None, goal_checker_id=None):
         goal = FollowPath.Goal()
         goal.path = self.make_path(poses)
         goal.controller_id = self.controller_id
-        goal.goal_checker_id = self.goal_checker_id
+        goal.goal_checker_id = goal_checker_id or self.goal_checker_id
         self.stopped_by_monitor = None
         result = self._send(self.follow_path_client, goal, 'follow_path', monitor=monitor)
         return result is not None and result.status == GoalStatus.STATUS_SUCCEEDED
@@ -1034,10 +1038,12 @@ class CourseRunner(Node):
                 return
         self.get_logger().info(
             '%.0f mm from the centre of %s, driving forward onto it' % (1000.0 * error, letter))
+        # its own precise goal checker: with the relaxed leg checker this short
+        # drive would count as done before it started
         poses = extend_path(
             rounded_polyline([(pose[0], pose[1]), (x, y)], 0.0, self.path_step),
-            self.goal_extension, self.path_step)
-        if not self.follow_path(poses):
+            self.centre_goal_extension, self.path_step)
+        if not self.follow_path(poses, goal_checker_id=self.centre_goal_checker_id):
             self.get_logger().warn('could not drive onto the centre of %s' % letter)
 
     def log_stop_error(self, letter):

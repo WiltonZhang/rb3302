@@ -78,7 +78,9 @@ controller_server:
     # "collision ahead" near the obstacle or a wall should not cost one. (was 0.3)
     failure_tolerance: 1.0
     progress_checker_plugins: ["progress_checker"]  # progress checker name
-    goal_checker_plugins: ["goal_checker"]  # goal checker name (course_runner asks for goal_checker)
+    # goal_checker ends each leg; precise_goal_checker ends course_runner's final
+    # short drive onto the square centre. (was ["goal_checker"])
+    goal_checker_plugins: ["goal_checker", "precise_goal_checker"]
     controller_plugins: ["FollowPath"]  # controller name (course_runner asks for FollowPath)
     progress_checker:
       plugin: nav2_controller::SimpleProgressChecker  # plugin implementing this
@@ -88,15 +90,23 @@ controller_server:
       movement_time_allowance: 15.0
     goal_checker:
       plugin: nav2_controller::SimpleGoalChecker  # plugin implementing this
-      # Scoring needs the robot over the centre label. course_runner ends every
-      # path goal_extension (0.08, course.yaml) past the centre; keep the two equal
-      # and the leg ends on the centre. 0.2 on the robot ended legs ~17 cm short
-      # and skipped course_runner's re-centring; 0.03 hunted near the goal.
-      # (was 0.03; 116bdf3: 0.04)
-      xy_goal_tolerance: 0.08
+      # Leg goal: relaxed so the robot doesn't hunt near the goal (0.2 ran well on
+      # the robot). The leg ends up to ~12 cm short of the centre; course_runner
+      # then drives onto the centre using precise_goal_checker below.
+      # (was 0.08; earlier 0.03; 116bdf3: 0.04)
+      xy_goal_tolerance: 0.2
       # Orientation is not scored -> do not waste time turning at each square.
       yaw_goal_tolerance: 3.14
       stateful: true  # once within the xy tolerance the leg stays done
+    precise_goal_checker:
+      # Used only for course_runner's short final drive onto the square centre
+      # (centre_goal_checker_id in course.yaml), whose path ends
+      # centre_goal_extension (0.03) past the centre, so the robot stops on it.
+      # Fixes N, H, J, K stopping short: with one 0.2 checker that drive ended at once.
+      plugin: nav2_controller::SimpleGoalChecker  # plugin implementing this
+      xy_goal_tolerance: 0.03
+      yaw_goal_tolerance: 3.14  # any heading
+      stateful: true  # once within the xy tolerance the drive stays done
     FollowPath:
       plugin: nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController  # plugin implementing this
       # 7f6eeaf's speed. Back to 0.22 if a 4-square mission gets close to 3 min.

@@ -32,7 +32,8 @@ course_runner:
     stop_seconds: 3.5     # rule is 3 s stopped per square; 0.5 s margin
     align_min_angle: 0.20 # turn on the spot before a leg if heading is off by more (rad)
     align_time_allowance: 10.0
-    goal_extension: 0.08  # end each path this far past the centre; = xy_goal_tolerance so the robot stops on it
+    goal_extension: 0.08  # end each leg's path this far past the centre (keep < ~0.10 for dead ends)
+    centre_goal_extension: 0.03   # final drive onto the centre ends this far past it (= precise xy tolerance)
     centre_tolerance: 0.03    # drive forward onto a goal centre if further off (m)
     centre_ahead_angle: 1.05  # ...and only if the centre is within 60 deg of the heading
     centre_turn_angle: 0.785  # before a turn on the spot bigger than this (rad), get onto the centre first
@@ -44,3 +45,4 @@ course_runner:
     server_timeout: 10.0  # give up waiting for a Nav2 action server after this (s)
     controller_id: FollowPath
     goal_checker_id: goal_checker
+    centre_goal_checker_id: precise_goal_checker  # goal checker for the final drive onto the centre
