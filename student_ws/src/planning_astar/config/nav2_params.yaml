@@ -12,12 +12,12 @@
 
 amcl:
   ros__parameters:
-    use_sim_time: false
-    base_frame_id: base_link
-    odom_frame_id: odom
-    global_frame_id: map
-    scan_topic: scan
-    robot_model_type: nav2_amcl::DifferentialMotionModel
+    use_sim_time: false  # robot clock, not a simulator
+    base_frame_id: base_link  # robot frame (launch rewrites it)
+    odom_frame_id: odom  # odometry frame (launch rewrites it)
+    global_frame_id: map  # map frame; AMCL publishes map->odom
+    scan_topic: scan  # lidar topic (launch rewrites it)
+    robot_model_type: nav2_amcl::DifferentialMotionModel  # particles move by turn, drive, turn; suits a skid-steer
     # Let the LiDAR correct the wheels. At 0.1 AMCL followed the odometry's
     # phantom forward motion during turns on the spot and lost the robot
     # (std 0.4-0.56 m in the c2bb18f / 04af912 runs). Friend B runs 0.3-0.4,
@@ -27,67 +27,67 @@ amcl:
     alpha3: 0.4    # translation noise from translation
     alpha4: 0.4    # translation noise from rotation
     alpha5: 0.3    # omni robots only, unused
-    laser_model_type: likelihood_field
+    laser_model_type: likelihood_field  # scores a scan by how far each beam end is from the nearest mapped wall
     laser_min_range: 0.15            # ignore returns off the robot's own body
     laser_max_range: 6.0             # whole course is < 4 m across
-    max_beams: 90
-    sigma_hit: 0.1
+    max_beams: 90  # beams used per scan; more = more accurate, more CPU
+    sigma_hit: 0.1  # how closely (m) a beam end must match a wall; smaller = sharper pose, loses track more easily
     # Weight scan points that land on mapped walls more (friend A's values,
     # tuned on a real-robot recording). (116bdf3: z_hit 0.6, z_rand 0.4)
     z_hit: 0.8
-    z_rand: 0.2
-    laser_likelihood_max_dist: 1.0
-    min_particles: 500
-    max_particles: 3000
-    pf_err: 0.05
-    pf_z: 0.99
-    update_min_d: 0.05
+    z_rand: 0.2  # weight of "beam is noise"; more tolerates unmapped things (obstacle, people)
+    laser_likelihood_max_dist: 1.0  # beam ends further (m) from any wall count as a miss
+    min_particles: 500  # fewest particles
+    max_particles: 3000  # most particles; more = more robust, more CPU
+    pf_err: 0.05  # allowed error when choosing the particle count
+    pf_z: 0.99  # confidence when choosing the particle count
+    update_min_d: 0.05  # AMCL updates after driving this far (m)
     # Update every ~3 deg of turning so the heading stays right through turns
     # (friend A 0.05, friend B 0.03). (116bdf3: 0.1)
     update_min_a: 0.05
-    resample_interval: 1
+    resample_interval: 1  # updates between resamplings; 1 = every update
     # No random particles: in a grid of identical squares they jump to the wrong square.
     recovery_alpha_fast: 0.0
-    recovery_alpha_slow: 0.0
-    transform_tolerance: 0.5
-    tf_broadcast: true
-    save_pose_rate: 0.5
+    recovery_alpha_slow: 0.0  # with recovery_alpha_fast: random-particle injection, off
+    transform_tolerance: 0.5  # how long (s) a published or looked-up transform stays valid
+    tf_broadcast: true  # publish map->odom; everything else depends on it
+    save_pose_rate: 0.5  # how often (Hz) the pose is saved so a restart resumes from it
 
 bt_navigator:
   ros__parameters:
-    use_sim_time: false
-    global_frame: map
-    robot_base_frame: base_link
-    odom_topic: /odom
-    bt_loop_duration: 10
-    default_server_timeout: 20
-    navigators: ["navigate_to_pose", "navigate_through_poses"]
+    use_sim_time: false  # robot clock, not a simulator
+    global_frame: map  # map frame name
+    robot_base_frame: base_link  # robot frame name
+    odom_topic: /odom  # where the robot speed is read
+    bt_loop_duration: 10  # time per behaviour-tree tick (ms)
+    default_server_timeout: 20  # how long (ms) a tree node waits for an action server
+    navigators: ["navigate_to_pose", "navigate_through_poses"]  # navigation actions offered
     navigate_to_pose:
-      plugin: nav2_bt_navigator::NavigateToPoseNavigator
+      plugin: nav2_bt_navigator::NavigateToPoseNavigator  # plugin implementing this
     navigate_through_poses:
-      plugin: nav2_bt_navigator::NavigateThroughPosesNavigator
+      plugin: nav2_bt_navigator::NavigateThroughPosesNavigator  # plugin implementing this
 
 controller_server:
   ros__parameters:
-    use_sim_time: false
-    controller_frequency: 20.0
-    min_x_velocity_threshold: 0.001
-    min_y_velocity_threshold: 0.5
-    min_theta_velocity_threshold: 0.001
+    use_sim_time: false  # robot clock, not a simulator
+    controller_frequency: 20.0  # how often (Hz) RPP computes a command; also its time step for max_angular_accel
+    min_x_velocity_threshold: 0.001  # measured forward speed below this counts as 0
+    min_y_velocity_threshold: 0.5  # sideways speed; 0.5 zeroes it (cannot move sideways)
+    min_theta_velocity_threshold: 0.001  # measured turn rate below this counts as 0
     # course_runner replans after every aborted leg (3 attempts), so a brief false
     # "collision ahead" near the obstacle or a wall should not cost one. (was 0.3)
     failure_tolerance: 1.0
-    progress_checker_plugins: ["progress_checker"]
-    goal_checker_plugins: ["goal_checker"]
-    controller_plugins: ["FollowPath"]
+    progress_checker_plugins: ["progress_checker"]  # progress checker name
+    goal_checker_plugins: ["goal_checker"]  # goal checker name (course_runner asks for goal_checker)
+    controller_plugins: ["FollowPath"]  # controller name (course_runner asks for FollowPath)
     progress_checker:
-      plugin: nav2_controller::SimpleProgressChecker
+      plugin: nav2_controller::SimpleProgressChecker  # plugin implementing this
       # default 0.5 m is almost a whole square; slow final approach would trip it
       required_movement_radius: 0.10
       # allow for in-place turns in dead ends (e.g. N), which do not count as movement
       movement_time_allowance: 15.0
     goal_checker:
-      plugin: nav2_controller::SimpleGoalChecker
+      plugin: nav2_controller::SimpleGoalChecker  # plugin implementing this
       # Scoring needs the robot over the centre label. course_runner ends every
       # path goal_extension (0.08, course.yaml) past the centre; keep the two equal
       # and the leg ends on the centre. 0.2 on the robot ended legs ~17 cm short
@@ -96,9 +96,9 @@ controller_server:
       xy_goal_tolerance: 0.08
       # Orientation is not scored -> do not waste time turning at each square.
       yaw_goal_tolerance: 3.14
-      stateful: true
+      stateful: true  # once within the xy tolerance the leg stays done
     FollowPath:
-      plugin: nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController
+      plugin: nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController  # plugin implementing this
       # 7f6eeaf's speed. Back to 0.22 if a 4-square mission gets close to 3 min.
       # (116bdf3: 0.22)
       desired_linear_vel: 0.18
@@ -106,27 +106,27 @@ controller_server:
       # 0.15 (7f6eeaf) zigzagged; friends run 0.25 and 0.30. Velocity-scaled
       # (0cbd2e4) followed the driver's jumpy speed reading. (was 0.20)
       lookahead_dist: 0.25
-      min_lookahead_dist: 0.15
-      max_lookahead_dist: 0.35
-      lookahead_time: 1.5
-      use_velocity_scaled_lookahead_dist: false
+      min_lookahead_dist: 0.15  # only used with the velocity-scaled lookahead (off)
+      max_lookahead_dist: 0.35  # only used with the velocity-scaled lookahead (off)
+      lookahead_time: 1.5  # speed x time = lookahead, only when velocity-scaled (off)
+      use_velocity_scaled_lookahead_dist: false  # fixed lookahead_dist; the measured speed is too jumpy to scale from
       # Near the end of a path the steering point stops at the goal and gets ever
       # closer, so small sideways errors became sharp steering (the swing as it
       # turned in to the centre). These keep the curvature point a fixed 0.25 m
       # ahead, projected past the goal. Added; Jazzy RPP options.
       use_fixed_curvature_lookahead: true
-      curvature_lookahead_dist: 0.25
-      interpolate_curvature_after_goal: true
+      curvature_lookahead_dist: 0.25  # distance (m) to that steering point
+      interpolate_curvature_after_goal: true  # let the steering point continue past the goal
       # The turn rate that ran on the robot. 1.2 / 1.0 / 0.8 (3023d14, dbacc72,
       # 479a950) stalled near tyre scrub; 2.5 (d4c9121) overshot every turn.
       rotate_to_heading_angular_vel: 1.5
-      transform_tolerance: 0.2
-      min_approach_linear_velocity: 0.08
-      approach_velocity_scaling_dist: 0.20
-      use_collision_detection: true
-      max_allowed_time_to_collision_up_to_carrot: 1.0
-      use_regulated_linear_velocity_scaling: true
-      regulated_linear_scaling_min_radius: 0.45
+      transform_tolerance: 0.2  # how long (s) a published or looked-up transform stays valid
+      min_approach_linear_velocity: 0.08  # slowest speed (m/s) near the goal; lower stalls, higher rolls past
+      approach_velocity_scaling_dist: 0.20  # within this (m) of the path end, speed drops with the distance left
+      use_collision_detection: true  # project the motion ahead; stop with "collision ahead" if the footprint would hit
+      max_allowed_time_to_collision_up_to_carrot: 1.0  # how far ahead (s of travel, not past the carrot) that check looks
+      use_regulated_linear_velocity_scaling: true  # slow down on tight arcs
+      regulated_linear_scaling_min_radius: 0.45  # arcs tighter than this (m): speed x radius / 0.45
       # Below ~0.12 m/s the arc turn command (speed x curvature) is too small to
       # turn the skid-steer (0cbd2e4 used 0.08 and got stuck turning).
       regulated_linear_scaling_min_speed: 0.12
@@ -134,11 +134,11 @@ controller_server:
       # below) this would slow the robot whenever a wall is near, which is
       # everywhere in a 58 cm square. Both friends run it off. (116bdf3: true)
       use_cost_regulated_linear_velocity_scaling: false
-      cost_scaling_dist: 0.12
-      cost_scaling_gain: 1.0
+      cost_scaling_dist: 0.12  # only for the near-obstacle slow-down (off)
+      cost_scaling_gain: 1.0  # only for the near-obstacle slow-down (off)
       inflation_cost_scaling_factor: 10.0   # must match local inflation_layer
-      allow_reversing: false
-      use_rotate_to_heading: true
+      allow_reversing: false  # never drive backwards along the path
+      use_rotate_to_heading: true  # allow turns on the spot
       # Turn on the spot only when the carrot is more than 45 deg off. 0.5 (7f6eeaf)
       # and 0.25 (d4c9121) turned small AMCL corrections into stop-and-spin events;
       # 1.0 (0cbd2e4) started turns too late.
@@ -146,58 +146,58 @@ controller_server:
       # RPP limits each turn command to the measured turn rate + accel * dt. At 2.0
       # that is 0.1 rad/s from standstill, which never beats tyre scrub.
       max_angular_accel: 20.0
-      max_robot_pose_search_dist: 1.0
+      max_robot_pose_search_dist: 1.0  # how far along the path (m) RPP searches for the nearest point
 
 local_costmap:
   local_costmap:
     ros__parameters:
-      use_sim_time: false
-      update_frequency: 10.0
-      publish_frequency: 5.0
-      global_frame: odom
-      robot_base_frame: base_link
-      rolling_window: true
-      width: 2
-      height: 2
-      resolution: 0.05
+      use_sim_time: false  # robot clock, not a simulator
+      update_frequency: 10.0  # how often (Hz) the layers update
+      publish_frequency: 5.0  # how often (Hz) the costmap is published (RViz, Spin, course_runner)
+      global_frame: odom  # map frame name
+      robot_base_frame: base_link  # robot frame name
+      rolling_window: true  # window that moves with the robot
+      width: 2  # window width (m)
+      height: 2  # window height (m)
+      resolution: 0.05  # cell size (m)
       # Template parameter. 18 x 19 cm measured; the length/width axis is not
       # specified, so 19 cm is used on both axes. base_link assumed at the chassis
       # centre. Same as 116bdf3. (template: 5 x 5 cm square)
       footprint: "[[0.095, 0.095], [0.095, -0.095], [-0.095, -0.095], [-0.095, 0.095]]"
       footprint_padding: 0.0   # 1 cm more room each side in tight spots (was 0.01)
-      plugins: ["obstacle_layer", "inflation_layer"]
+      plugins: ["obstacle_layer", "inflation_layer"]  # layers, in order
       obstacle_layer:
-        plugin: nav2_costmap_2d::ObstacleLayer
-        enabled: true
-        observation_sources: scan
+        plugin: nav2_costmap_2d::ObstacleLayer  # plugin implementing this
+        enabled: true  # on
+        observation_sources: scan  # sensors feeding this layer
         scan:
-          topic: /scan
-          data_type: LaserScan
-          clearing: true
-          marking: true
+          topic: /scan  # sensor topic (launch rewrites it)
+          data_type: LaserScan  # message type
+          clearing: true  # clear cells the beams pass through
+          marking: true  # mark beam end points as obstacles
           # Nav2's default for a scan source is 0.0 m and the LiDAR sits 9 cm above
           # base_link, so without this every scan point was thrown away: this
           # costmap stayed empty and an obstacle box would be invisible (friend A
           # found the same). (116bdf3: not set)
           max_obstacle_height: 2.0
-          obstacle_min_range: 0.15
-          obstacle_max_range: 2.0
-          raytrace_min_range: 0.15
-          raytrace_max_range: 2.5
+          obstacle_min_range: 0.15  # returns closer than this (m) are not marked
+          obstacle_max_range: 2.0  # returns further than this (m) are not marked
+          raytrace_min_range: 0.15  # clearing starts this far (m) from the lidar
+          raytrace_max_range: 2.5  # clearing reaches this far (m); keep >= obstacle_max_range
       inflation_layer:
-        plugin: nav2_costmap_2d::InflationLayer
-        inflation_radius: 0.25
-        cost_scaling_factor: 10.0
-      always_send_full_costmap: true
+        plugin: nav2_costmap_2d::InflationLayer  # plugin implementing this
+        inflation_radius: 0.25  # how far (m) the cost halo reaches
+        cost_scaling_factor: 10.0  # how fast the halo cost falls; lower pulls paths to the middle
+      always_send_full_costmap: true  # publish the whole map each time
 
 global_costmap:
   global_costmap:
     ros__parameters:
-      use_sim_time: false
-      update_frequency: 2.0
-      publish_frequency: 1.0
-      global_frame: map
-      robot_base_frame: base_link
+      use_sim_time: false  # robot clock, not a simulator
+      update_frequency: 2.0  # how often (Hz) the layers update
+      publish_frequency: 1.0  # how often (Hz) the costmap is published (RViz, Spin, course_runner)
+      global_frame: map  # map frame name
+      robot_base_frame: base_link  # robot frame name
       # The static layer resizes this costmap to the map anyway; set to match
       # rb3302_map.yaml. (116bdf3: 0.05, the old map's resolution)
       resolution: 0.04854167
@@ -208,77 +208,77 @@ global_costmap:
       # same 19 x 19 cm square as local_costmap (template: 5 x 5 cm square)
       footprint: "[[0.095, 0.095], [0.095, -0.095], [-0.095, -0.095], [-0.095, 0.095]]"
       footprint_padding: 0.0   # 1 cm more room each side in tight spots (was 0.01)
-      track_unknown_space: true
-      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      track_unknown_space: true  # keep unmapped cells unknown so the planner avoids them
+      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]  # layers, in order
       static_layer:
-        plugin: nav2_costmap_2d::StaticLayer
-        map_subscribe_transient_local: true
+        plugin: nav2_costmap_2d::StaticLayer  # plugin implementing this
+        map_subscribe_transient_local: true  # receive the map map_server publishes once at start-up
       obstacle_layer:
         # Marks the possible obstacle blocking a square so course_runner routes around it.
         plugin: nav2_costmap_2d::ObstacleLayer
-        enabled: true
-        observation_sources: scan
+        enabled: true  # on
+        observation_sources: scan  # sensors feeding this layer
         scan:
-          topic: /scan
-          data_type: LaserScan
-          clearing: true
-          marking: true
+          topic: /scan  # sensor topic (launch rewrites it)
+          data_type: LaserScan  # message type
+          clearing: true  # clear cells the beams pass through
+          marking: true  # mark beam end points as obstacles
           max_obstacle_height: 2.0     # see local_costmap (116bdf3: not set)
-          obstacle_min_range: 0.15
-          obstacle_max_range: 2.5
-          raytrace_min_range: 0.15
-          raytrace_max_range: 3.0
+          obstacle_min_range: 0.15  # returns closer than this (m) are not marked
+          obstacle_max_range: 2.5  # returns further than this (m) are not marked
+          raytrace_min_range: 0.15  # clearing starts this far (m) from the lidar
+          raytrace_max_range: 3.0  # clearing reaches this far (m); keep >= obstacle_max_range
       inflation_layer:
         # A square centre is 0.243 m from the drawn walls: cost there ~90/252, so
         # NavFn (fallback planner) is pulled to the middle of each square.
         plugin: nav2_costmap_2d::InflationLayer
-        inflation_radius: 0.30
-        cost_scaling_factor: 10.0
-      always_send_full_costmap: true
+        inflation_radius: 0.30  # how far (m) the cost halo reaches
+        cost_scaling_factor: 10.0  # how fast the halo cost falls; lower pulls paths to the middle
+      always_send_full_costmap: true  # publish the whole map each time
 
 map_server:
   ros__parameters:
-    use_sim_time: false
-    yaml_filename: ""
+    use_sim_time: false  # robot clock, not a simulator
+    yaml_filename: ""  # the launch sets ~/rb3302_final_proj_code/student_ws/maps/rb3302_map.yaml
 
 planner_server:
   ros__parameters:
-    use_sim_time: false
-    expected_planner_frequency: 1.0
-    planner_plugins: ["GridBased"]
+    use_sim_time: false  # robot clock, not a simulator
+    expected_planner_frequency: 1.0  # only warns if planning is slower than this (Hz)
+    planner_plugins: ["GridBased"]  # planner name (fallback and --planner nav2 only)
     GridBased:
-      plugin: nav2_navfn_planner::NavfnPlanner
-      use_astar: true
-      tolerance: 0.05
-      allow_unknown: false
+      plugin: nav2_navfn_planner::NavfnPlanner  # plugin implementing this
+      use_astar: true  # A* instead of Dijkstra
+      tolerance: 0.05  # path may end this far (m) from a blocked goal
+      allow_unknown: false  # never plan through unknown cells
 
 smoother_server:
   ros__parameters:
-    use_sim_time: false
-    smoother_plugins: ["simple_smoother"]
+    use_sim_time: false  # robot clock, not a simulator
+    smoother_plugins: ["simple_smoother"]  # path smoother; nothing calls it
     simple_smoother:
-      plugin: nav2_smoother::SimpleSmoother
+      plugin: nav2_smoother::SimpleSmoother  # plugin implementing this
 
 behavior_server:
   ros__parameters:
-    use_sim_time: false
-    local_costmap_topic: local_costmap/costmap_raw
-    global_costmap_topic: global_costmap/costmap_raw
-    local_footprint_topic: local_costmap/published_footprint
-    global_footprint_topic: global_costmap/published_footprint
-    behavior_plugins: ["spin", "backup", "drive_on_heading", "wait"]
+    use_sim_time: false  # robot clock, not a simulator
+    local_costmap_topic: local_costmap/costmap_raw  # costmap for behaviour collision checks
+    global_costmap_topic: global_costmap/costmap_raw  # costmap for behaviour collision checks
+    local_footprint_topic: local_costmap/published_footprint  # robot outline for those checks
+    global_footprint_topic: global_costmap/published_footprint  # robot outline for those checks
+    behavior_plugins: ["spin", "backup", "drive_on_heading", "wait"]  # course_runner uses spin; the fallback tree may use backup and wait
     spin:
-      plugin: nav2_behaviors::Spin
+      plugin: nav2_behaviors::Spin  # plugin implementing this
     backup:
-      plugin: nav2_behaviors::BackUp
+      plugin: nav2_behaviors::BackUp  # plugin implementing this
     drive_on_heading:
-      plugin: nav2_behaviors::DriveOnHeading
+      plugin: nav2_behaviors::DriveOnHeading  # plugin implementing this
     wait:
-      plugin: nav2_behaviors::Wait
-    local_frame: odom
-    global_frame: map
-    robot_base_frame: base_link
-    transform_tolerance: 0.2
+      plugin: nav2_behaviors::Wait  # plugin implementing this
+    local_frame: odom  # frame Spin measures its angle in (EKF yaw)
+    global_frame: map  # map frame name
+    robot_base_frame: base_link  # robot frame name
+    transform_tolerance: 0.2  # how long (s) a published or looked-up transform stays valid
     # Spin checks this much turning ahead for collisions. With the square footprint
     # (corners sweep 13.4 cm) 1.0 s (~100 deg) refused turns next to the obstacle
     # or a wall. Friend B uses 0.5. (was 1.0)
@@ -291,33 +291,33 @@ behavior_server:
     # degrees short and sit there until the time allowance ran out (a stop at the
     # turn). 1.0 rad/s did turn the robot in the first field test. (116bdf3: 0.6)
     min_rotational_vel: 1.0
-    rotational_acc_lim: 4.0
+    rotational_acc_lim: 4.0  # Spin slows at sqrt(2 x 4.0 x angle left): full speed until ~23 deg, 1.0 rad/s for the last ~7 deg
 
 velocity_smoother:
   ros__parameters:
-    use_sim_time: false
-    smoothing_frequency: 20.0
-    feedback: OPEN_LOOP
+    use_sim_time: false  # robot clock, not a simulator
+    smoothing_frequency: 20.0  # output rate (Hz) to /cmd_vel
+    feedback: OPEN_LOOP  # assume the robot did what it was last told
     # Driver (driver.launch.py) clamps at 0.8 m/s / 3.0 rad/s. Linear kept low for the
     # 58 cm grid; angular near the clamp because skid-steer turns at ~1/3 of the command.
     max_velocity: [0.25, 0.0, 2.8]
-    min_velocity: [-0.25, 0.0, -2.8]
-    max_accel: [0.6, 0.0, 6.0]
+    min_velocity: [-0.25, 0.0, -2.8]  # [forward m/s, sideways, turn rad/s] lower caps
+    max_accel: [0.6, 0.0, 6.0]  # how fast speed may rise [m/s2, -, rad/s2]
     # Angular decel -10: stop a turn quickly once RPP ends it, so less overshoot.
     max_decel: [-0.6, 0.0, -10.0]
-    deadband_velocity: [0.0, 0.0, 0.0]
-    velocity_timeout: 1.0
-    odom_topic: /odom
-    enable_stamped_cmd_vel: false
+    deadband_velocity: [0.0, 0.0, 0.0]  # commands smaller than this are sent as 0 (off)
+    velocity_timeout: 1.0  # no RPP command for this long (s): ramp to 0
+    odom_topic: /odom  # where the robot speed is read
+    enable_stamped_cmd_vel: false  # publish plain Twist
 
 waypoint_follower:
   ros__parameters:
-    use_sim_time: false
-    loop_rate: 20
-    stop_on_failure: false
-    waypoint_task_executor_plugin: wait_at_waypoint
+    use_sim_time: false  # robot clock, not a simulator
+    loop_rate: 20  # how often (Hz) the current waypoint is checked
+    stop_on_failure: false  # carry on if one waypoint fails
+    waypoint_task_executor_plugin: wait_at_waypoint  # wait at each waypoint (--planner nav2 only)
     wait_at_waypoint:
-      plugin: nav2_waypoint_follower::WaitAtWaypoint
-      enabled: true
+      plugin: nav2_waypoint_follower::WaitAtWaypoint  # plugin implementing this
+      enabled: true  # on
       # Rule is 3 s stop per square; 0.5 s margin for timing jitter.
       waypoint_pause_duration: 3500
