@@ -74,44 +74,37 @@ controller_server:
     min_x_velocity_threshold: 0.001  # measured forward speed below this counts as 0
     min_y_velocity_threshold: 0.5  # sideways speed; 0.5 zeroes it (cannot move sideways)
     min_theta_velocity_threshold: 0.001  # measured turn rate below this counts as 0
-    # course_runner replans after every aborted leg (3 attempts), so a brief false
-    # "collision ahead" near the obstacle or a wall should not cost one. (was 0.3)
-    failure_tolerance: 1.0
+    # How long RPP may keep failing (e.g. "collision ahead") before the leg aborts
+    # and course_runner replans. 1.0 made recovery slow after K -> P failed; 0.5
+    # still rides out a one-off false alarm. (was 1.0; earlier 0.3)
+    failure_tolerance: 0.5
     progress_checker_plugins: ["progress_checker"]  # progress checker name
-    # goal_checker ends each leg; precise_goal_checker ends course_runner's final
-    # short drive onto the square centre. (was ["goal_checker"])
-    goal_checker_plugins: ["goal_checker", "precise_goal_checker"]
+    goal_checker_plugins: ["goal_checker"]  # goal checker name (course_runner asks for goal_checker)
     controller_plugins: ["FollowPath"]  # controller name (course_runner asks for FollowPath)
     progress_checker:
       plugin: nav2_controller::SimpleProgressChecker  # plugin implementing this
       # default 0.5 m is almost a whole square; slow final approach would trip it
       required_movement_radius: 0.10
-      # allow for in-place turns in dead ends (e.g. N), which do not count as movement
-      movement_time_allowance: 15.0
+      # in-place turns do not count as movement; a 180 deg turn takes ~5 s, so 8 s
+      # still allows it while giving up on a stuck robot sooner. (was 15.0)
+      movement_time_allowance: 8.0
     goal_checker:
       plugin: nav2_controller::SimpleGoalChecker  # plugin implementing this
-      # Leg goal: relaxed so the robot doesn't hunt near the goal (0.2 ran well on
-      # the robot). The leg ends up to ~12 cm short of the centre; course_runner
-      # then drives onto the centre using precise_goal_checker below.
-      # (was 0.08; earlier 0.03; 116bdf3: 0.04)
-      xy_goal_tolerance: 0.2
+      # Scoring needs the robot over the centre label. course_runner ends every
+      # path goal_extension (0.08, course.yaml) past the centre; keep the two equal
+      # and the leg ends on the centre. 0.2 on the robot ended legs ~17 cm short
+      # and skipped course_runner's re-centring; 0.03 hunted near the goal.
+      # (was 0.03; 116bdf3: 0.04)
+      xy_goal_tolerance: 0.08
       # Orientation is not scored -> do not waste time turning at each square.
       yaw_goal_tolerance: 3.14
       stateful: true  # once within the xy tolerance the leg stays done
-    precise_goal_checker:
-      # Used only for course_runner's short final drive onto the square centre
-      # (centre_goal_checker_id in course.yaml), whose path ends
-      # centre_goal_extension (0.03) past the centre, so the robot stops on it.
-      # Fixes N, H, J, K stopping short: with one 0.2 checker that drive ended at once.
-      plugin: nav2_controller::SimpleGoalChecker  # plugin implementing this
-      xy_goal_tolerance: 0.03
-      yaw_goal_tolerance: 3.14  # any heading
-      stateful: true  # once within the xy tolerance the drive stays done
     FollowPath:
       plugin: nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController  # plugin implementing this
-      # 7f6eeaf's speed. Back to 0.22 if a 4-square mission gets close to 3 min.
-      # (116bdf3: 0.22)
-      desired_linear_vel: 0.18
+      # Template ba2057e, faster: 0.22 is what 116bdf3 ran; stays under the
+      # smoother's 0.25 cap, and the approach slow-down still lands the robot on
+      # the centre slowly. (was 0.18 in ba2057e)
+      desired_linear_vel: 0.22
       # Fixed 0.25 m lookahead: 0.20 still wobbled a little on each AMCL correction,
       # 0.15 (7f6eeaf) zigzagged; friends run 0.25 and 0.30. Velocity-scaled
       # (0cbd2e4) followed the driver's jumpy speed reading. (was 0.20)
@@ -136,7 +129,9 @@ controller_server:
       use_collision_detection: true  # project the motion ahead; stop with "collision ahead" if the footprint would hit
       max_allowed_time_to_collision_up_to_carrot: 1.0  # how far ahead (s of travel, not past the carrot) that check looks
       use_regulated_linear_velocity_scaling: true  # slow down on tight arcs
-      regulated_linear_scaling_min_radius: 0.45  # arcs tighter than this (m): speed x radius / 0.45
+      # arcs tighter than this (m): speed x radius / 0.35. Less slowing on gentle
+      # arcs; the 0.29 m corner arcs still slow to the 0.12 floor. (was 0.45)
+      regulated_linear_scaling_min_radius: 0.35
       # Below ~0.12 m/s the arc turn command (speed x curvature) is too small to
       # turn the skid-steer (0cbd2e4 used 0.08 and got stuck turning).
       regulated_linear_scaling_min_speed: 0.12
@@ -169,7 +164,9 @@ local_costmap:
       rolling_window: true  # window that moves with the robot
       width: 2  # window width (m)
       height: 2  # window height (m)
-      resolution: 0.05  # cell size (m)
+      # cell size (m). 0.05 cells could mark a wall up to 5 cm closer than it is,
+      # which stopped centred 180 deg turns in dead ends (K -> P). (was 0.05)
+      resolution: 0.025
       # Template parameter. 18 x 19 cm measured; the length/width axis is not
       # specified, so 19 cm is used on both axes. base_link assumed at the chassis
       # centre. Same as 116bdf3. (template: 5 x 5 cm square)
@@ -293,15 +290,18 @@ behavior_server:
     # (corners sweep 13.4 cm) 1.0 s (~100 deg) refused turns next to the obstacle
     # or a wall. Friend B uses 0.5. (was 1.0)
     simulate_ahead_time: 0.5
-    # Spin slows down as it nears the target; 1.8 cap keeps the 90 deg leg
-    # turns from overshooting (2.5 overshot).
-    max_rotational_vel: 1.8
+    # Spin's top turn rate. At 1.8 the skid-steer body swung several cm towards a
+    # wall during 180 deg turns in dead ends (K -> P); 1.5 turned fine before and
+    # friend B uses it. Below ~1.0 stalls. (was 1.8; 2.5 overshot)
+    max_rotational_vel: 1.5
     # Spin ramps down to this for the last few degrees. 0.6 is below the
     # ~0.8-1.0 rad/s this base needs to beat tyre scrub, so it could stall a few
     # degrees short and sit there until the time allowance ran out (a stop at the
     # turn). 1.0 rad/s did turn the robot in the first field test. (116bdf3: 0.6)
     min_rotational_vel: 1.0
-    rotational_acc_lim: 4.0  # Spin slows at sqrt(2 x 4.0 x angle left): full speed until ~23 deg, 1.0 rad/s for the last ~7 deg
+    # Spin slows at sqrt(2 x 3.0 x angle left): full speed until ~22 deg, 1.0 rad/s
+    # for the last ~10 deg. Gentler than 4.0, so less swing. (was 4.0)
+    rotational_acc_lim: 3.0
 
 velocity_smoother:
   ros__parameters:

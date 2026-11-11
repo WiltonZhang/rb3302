@@ -35,6 +35,8 @@ These are the owner's (Wilton's) standing rules for this repository. Follow them
 - Current tuning and the reason for each value: the comments in
   `student_ws/src/planning_rpp/config/nav2_params.yaml` (the `planning_astar` copy is identical).
   Read them before changing anything. Earlier decisions are in the git history.
+- Template: the `nav2_params.yaml` of commit `ba2057e` (owner: it ran best). Tune from it;
+  do not drop its keys or the original course template's keys.
 - No separate docs: tuning changes and their explanations go straight into `nav2_params.yaml`
   (rpp + astar), never into a separate document.
 
