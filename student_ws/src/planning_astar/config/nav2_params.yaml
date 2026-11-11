@@ -74,7 +74,9 @@ controller_server:
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.5
     min_theta_velocity_threshold: 0.001
-    failure_tolerance: 0.3
+    # course_runner replans after every aborted leg (3 attempts), so a brief false
+    # "collision ahead" near the obstacle or a wall should not cost one. (was 0.3)
+    failure_tolerance: 1.0
     progress_checker_plugins: ["progress_checker"]
     goal_checker_plugins: ["goal_checker"]
     controller_plugins: ["FollowPath"]
@@ -99,10 +101,10 @@ controller_server:
       # 7f6eeaf's speed. Back to 0.22 if a 4-square mission gets close to 3 min.
       # (116bdf3: 0.22)
       desired_linear_vel: 0.18
-      # Fixed 0.20 m lookahead. 0.15 (7f6eeaf) turned each 2-3 cm AMCL correction
-      # into a sharp steer (zigzag on straights); the velocity-scaled lookahead
-      # (0cbd2e4) followed the driver's jumpy speed reading and sat at its minimum.
-      lookahead_dist: 0.20
+      # Fixed 0.25 m lookahead: 0.20 still wobbled a little on each AMCL correction,
+      # 0.15 (7f6eeaf) zigzagged; friends run 0.25 and 0.30. Velocity-scaled
+      # (0cbd2e4) followed the driver's jumpy speed reading. (was 0.20)
+      lookahead_dist: 0.25
       min_lookahead_dist: 0.15
       max_lookahead_dist: 0.35
       lookahead_time: 1.5
@@ -154,7 +156,7 @@ local_costmap:
       # specified, so 19 cm is used on both axes. base_link assumed at the chassis
       # centre. Same as 116bdf3. (template: 5 x 5 cm square)
       footprint: "[[0.095, 0.095], [0.095, -0.095], [-0.095, -0.095], [-0.095, 0.095]]"
-      footprint_padding: 0.01
+      footprint_padding: 0.0   # 1 cm more room each side in tight spots (was 0.01)
       plugins: ["obstacle_layer", "inflation_layer"]
       obstacle_layer:
         plugin: nav2_costmap_2d::ObstacleLayer
@@ -197,7 +199,7 @@ global_costmap:
       initial_transform_timeout: 600.0
       # same 19 x 19 cm square as local_costmap (template: 5 x 5 cm square)
       footprint: "[[0.095, 0.095], [0.095, -0.095], [-0.095, -0.095], [-0.095, 0.095]]"
-      footprint_padding: 0.01
+      footprint_padding: 0.0   # 1 cm more room each side in tight spots (was 0.01)
       track_unknown_space: true
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
       static_layer:
@@ -269,7 +271,10 @@ behavior_server:
     global_frame: map
     robot_base_frame: base_link
     transform_tolerance: 0.2
-    simulate_ahead_time: 1.0
+    # Spin checks this much turning ahead for collisions. With the square footprint
+    # (corners sweep 13.4 cm) 1.0 s (~100 deg) refused turns next to the obstacle
+    # or a wall. Friend B uses 0.5. (was 1.0)
+    simulate_ahead_time: 0.5
     # Spin slows down as it nears the target; 1.8 cap keeps the 90 deg leg
     # turns from overshooting (2.5 overshot).
     max_rotational_vel: 1.8
