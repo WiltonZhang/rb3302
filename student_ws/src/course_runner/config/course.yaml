@@ -31,7 +31,7 @@ course_runner:
     turn_penalty: 0.5     # A* extra cost per corner: prefer routes with fewer turns
     stop_seconds: 3.5     # rule is 3 s stopped per square; 0.5 s margin
     align_min_angle: 0.20 # turn on the spot before a leg if heading is off by more (rad)
-    align_time_allowance: 10.0
+    align_time_allowance: 6.0   # give up a stuck turn on the spot after this (s); was 10
     goal_extension: 0.08  # end each path this far past the centre; = xy_goal_tolerance so the robot stops on it
     centre_tolerance: 0.03    # drive forward onto a goal centre if further off (m)
     centre_ahead_angle: 1.05  # ...and only if the centre is within 60 deg of the heading
@@ -40,7 +40,7 @@ course_runner:
     blocked_cost: 99      # global costmap value (99 inscribed, 100 lethal) that blocks a square
     monitor_period: 0.5   # while driving, check the path ahead in the costmap this often (s)
     monitor_distance: 1.2 # how far ahead along the path to check (m)
-    replan_attempts: 3    # grid replans per leg before falling back to the Nav2 planner
+    replan_attempts: 2    # grid replans per leg before falling back to the Nav2 planner; was 3
     server_timeout: 10.0  # give up waiting for a Nav2 action server after this (s)
     controller_id: FollowPath
     goal_checker_id: goal_checker
