@@ -74,7 +74,7 @@ footer { padding-block: 32px 0; color: var(--muted); font-size: 13px; }
 
 <div class="wrap">
   <header class="top">
-    <div class="eyebrow">student_ws · planning_rpp/config/nav2_params.yaml · commit ee11f8c (= 116bdf3)</div>
+    <div class="eyebrow">student_ws · planning_rpp/config/nav2_params.yaml · main after PR #9 (720e729)</div>
     <h1>RB3302 Nav2 Parameters</h1>
     <p>What every parameter in the Wave Rover's Nav2 file does, and what changing it tunes. The <code>planning_astar</code> copy is identical. Values tagged <span class="tag launch">launch</span> are overwritten by <code>planning.launch.py</code> at start-up; rows tagged <span class="tag unused">no effect</span> are set but do nothing in this setup.</p>
   </header>
@@ -90,9 +90,10 @@ footer { padding-block: 32px 0; color: var(--muted); font-size: 13px; }
   <section id="overview">
     <h2>What runs in a graded run</h2>
     <div class="flow">
-      <div><b>Pose</b><span>The EKF (set up in the launch file, not in this yaml) publishes <code>/odom</code>; <code>amcl</code> corrects it against the map.</span></div>
-      <div><b>Legs and corner arcs</b><span>course_runner sends its own grid path to <code>controller_server</code>, which runs RPP (<code>FollowPath</code>). RPP → <code>velocity_smoother</code> → <code>/cmd_vel</code>.</span></div>
-      <div><b>Start spin, turn before each leg</b><span><code>behavior_server</code> Spin. It publishes straight to <code>/cmd_vel</code>, so the velocity smoother's limits don't apply to it.</span></div>
+      <div><b>Pose</b><span>The EKF (set up in the launch file, not in this yaml) publishes <code>/odom</code>; <code>amcl</code> corrects it against the map. Launched with <code>raw_odom_topic:=/odom/raw_signed</code>, the EKF reads its wheel speed from course_runner's <code>odom_sign</code>, which restores the sign the board leaves off (without it, turning on the spot and reversing read as driving forward).</span></div>
+      <div><b>Start</b><span>course_runner publishes the start pose, then asks <code>amcl</code> for stationary updates (<code>request_nomotion_update</code>) until the scan lies on mapped walls, and clears both costmaps. The robot doesn't move.</span></div>
+      <div><b>Legs and corner arcs</b><span>course_runner sends its own grid path to <code>controller_server</code>, which runs RPP (<code>FollowPath</code>). RPP → <code>velocity_smoother</code> → <code>/cmd_vel</code>. While a leg runs, course_runner watches the global costmap 1.2 m ahead; a square that becomes blocked stops the leg and it is replanned around it.</span></div>
+      <div><b>Turn before each leg</b><span><code>behavior_server</code> Spin, on the square centre (also the start spin with <code>--localise spin</code>). It publishes straight to <code>/cmd_vel</code>, so the velocity smoother's limits don't apply to it.</span></div>
       <div><b>Only if a grid leg fails</b><span>course_runner hands the leg to <code>navigate_to_pose</code> (<code>bt_navigator</code> + <code>planner_server</code>).</span></div>
       <div><b>Only with <code>--planner nav2</code></b><span><code>waypoint_follower</code>.</span></div>
       <div><b>Never called</b><span><code>smoother_server</code>.</span></div>
@@ -111,42 +112,44 @@ footer { padding-block: 32px 0; color: var(--muted); font-size: 13px; }
   <div id="nodes"></div>
   <p class="empty" id="empty" hidden>No parameter matches that filter. Clear it to see every node.</p>
 
-  <footer>Not in this file: the EKF settings, which live in <code>planning.launch.py</code>. Descriptions are for Nav2 on ROS 2 Jazzy.</footer>
+  <footer>Not in this file: the EKF settings, which live in <code>planning.launch.py</code>; its wheel-speed topic is picked at launch with <code>raw_odom_topic:=/odom/raw_signed</code>. Grid geometry and course_runner's own settings are in <code>course_runner/config/course.yaml</code>. Descriptions are for Nav2 on ROS 2 Jazzy.</footer>
 </div>
 
 <script>
 const SYM = [
   ["Zigzag and constant re-aiming on straights", "lookahead_dist, rotate_to_heading_min_angle; AMCL alpha1–alpha4, update_min_d / update_min_a (each AMCL correction shifts the carrot sideways)"],
   ["Over-rotating, then correcting back", "Spin max_rotational_vel, min_rotational_vel, rotational_acc_lim; RPP rotate_to_heading_angular_vel; smoother max_decel (RPP turns only)"],
-  ["Stalling in turns", "The same turn rates set too low. Every run below the current values stalled."],
-  ["Stopping short of the centre, or past it", "xy_goal_tolerance, min_approach_linear_velocity, approach_velocity_scaling_dist"],
+  ["Stalling in turns", "The same turn rates set too low (every run below the current values stalled), and Spin min_rotational_vel for the last few degrees of a turn."],
+  ["Stopping short of the centre, or past it", "xy_goal_tolerance, min_approach_linear_velocity, approach_velocity_scaling_dist, plus goal_extension, centre_tolerance and aim_offset_x / aim_offset_y in course.yaml"],
   ["Wide or late corners", "lookahead_dist, regulated_linear_scaling_min_radius, regulated_linear_scaling_min_speed, plus corner_radius in course.yaml"],
-  ["Stopping near walls with “collision ahead”", "use_collision_detection, max_allowed_time_to_collision_up_to_carrot, failure_tolerance, footprint / footprint_padding, Spin simulate_ahead_time"],
-  ["RViz pose drifting away from the real robot", "AMCL alpha1–alpha4, sigma_hit, z_hit / z_rand, update_min_d / update_min_a, recovery_alpha_*"]
+  ["Stopping near walls with “collision ahead”", "use_collision_detection, max_allowed_time_to_collision_up_to_carrot, failure_tolerance, robot_radius / footprint_padding, Spin simulate_ahead_time"],
+  ["Turning on the spot while RViz shows it sliding or flying away", "The wheel speed has no sign: run odom_sign and launch with raw_odom_topic:=/odom/raw_signed. Then AMCL alpha1–alpha4, update_min_a."],
+  ["RViz pose drifting away from the real robot", "AMCL alpha1–alpha4, sigma_hit, z_hit / z_rand, update_min_d / update_min_a, recovery_alpha_*"],
+  ["Obstacle not seen or not routed around", "scan.max_obstacle_height in both costmaps, plus blocked_cost and monitor_distance in course.yaml"]
 ];
 
 // [param, value, description, flag]  flag: "launch" | "unused" | ""
 const NODES = [
  { id: "amcl", name: "amcl", sub: "Where the robot is on the map", use: ["run", "every run"],
-   note: "Raising alpha1–alpha4 spreads the particles, so AMCL leans on the lidar and the pose gets jumpier. Lowering them trusts odometry more: smoother, but it follows odometry errors. course_runner sets the start pose by publishing /initialpose (the launch passes set_initial_pose: false).",
+   note: "Raising alpha1–alpha4 spreads the particles, so AMCL leans on the lidar and the pose gets jumpier. Lowering them trusts odometry more: smoother, but it follows odometry errors. At 0.1 AMCL followed the odometry's slides during turns on the spot and lost the robot; 0.3–0.4 lets the lidar correct them. course_runner sets the start pose by publishing /initialpose (the launch passes set_initial_pose: false), then asks for stationary updates until the scan matches the map.",
    rows: [
   ["base_frame_id, odom_frame_id, global_frame_id", "base_link, odom, map", "Frame names. AMCL publishes the map→odom correction.", "launch"],
   ["scan_topic", "scan → /scan", "Lidar topic.", "launch"],
   ["robot_model_type", "DifferentialMotionModel", "How particles move between updates: turn, drive, turn. Suits a skid-steer.", ""],
-  ["alpha1", "0.1", "Heading error to expect per amount turned.", ""],
-  ["alpha2", "0.1", "Heading error to expect per distance driven.", ""],
-  ["alpha3", "0.1", "Distance error to expect per distance driven.", ""],
-  ["alpha4", "0.1", "Distance error to expect per amount turned, e.g. odometry creeping forward during a spin.", ""],
-  ["alpha5", "0.2", "Omni robots only. Ignored by the differential model.", "unused"],
+  ["alpha1", "0.4", "Heading error to expect per amount turned.", ""],
+  ["alpha2", "0.3", "Heading error to expect per distance driven.", ""],
+  ["alpha3", "0.4", "Distance error to expect per distance driven.", ""],
+  ["alpha4", "0.4", "Distance error to expect per amount turned, e.g. odometry creeping forward during a spin.", ""],
+  ["alpha5", "0.3", "Omni robots only. Ignored by the differential model.", "unused"],
   ["laser_model_type", "likelihood_field", "Scores a scan by how far each beam's end point is from the nearest wall on the map.", ""],
   ["laser_min_range / laser_max_range", "0.15 / 6.0", "Beams shorter or longer than these (m) are ignored.", ""],
   ["max_beams", "90", "Beams used from each scan. More is more accurate but uses more CPU.", ""],
   ["sigma_hit", "0.1", "How closely (m) a beam end must match a wall to score well. Smaller gives a sharper pose but loses track more easily where the map is slightly off.", ""],
-  ["z_hit / z_rand", "0.6 / 0.4", "Weight of “beam matches the map” against “beam is noise”. More z_rand tolerates unmapped things (the obstacle, people) better.", ""],
+  ["z_hit / z_rand", "0.8 / 0.2", "Weight of “beam matches the map” against “beam is noise”. More z_hit trusts beams that land on mapped walls; more z_rand tolerates unmapped things (the obstacle, people) better.", ""],
   ["laser_likelihood_max_dist", "1.0", "How far (m) from walls a beam end can still score; beyond that it counts as a miss.", ""],
   ["min_particles / max_particles", "500 / 3000", "Range for the number of particles. More is more robust but uses more CPU.", ""],
   ["pf_err / pf_z", "0.05 / 0.99", "How AMCL picks the particle count inside that range (allowed error and confidence).", ""],
-  ["update_min_d / update_min_a", "0.05 / 0.1", "AMCL updates after moving this far (m) or turning this much (rad, about 6°). Smaller means more frequent, smaller corrections.", ""],
+  ["update_min_d / update_min_a", "0.05 / 0.05", "AMCL updates after moving this far (m) or turning this much (rad, about 3°). Smaller means more frequent, smaller corrections, so the heading stays right through a turn.", ""],
   ["resample_interval", "1", "Updates between resamplings; 1 means every update.", ""],
   ["recovery_alpha_fast / recovery_alpha_slow", "0.0 / 0.0", "Add random particles when scans stop matching, to re-find a lost robot. 0 turns this off.", ""],
   ["transform_tolerance", "0.5", "How long (s) each published map→odom stays valid, so TF lookups don't fail between updates.", ""],
@@ -172,14 +175,14 @@ const NODES = [
   ["progress_checker.plugin", "SimpleProgressChecker", "Aborts FollowPath when the robot stops making progress.", ""],
   ["required_movement_radius / movement_time_allowance", "0.10 / 15.0", "The robot must move 10 cm within 15 s. Turning on the spot doesn't count as moving.", ""],
   ["goal_checker.plugin", "SimpleGoalChecker", "Decides when a leg is done.", ""],
-  ["xy_goal_tolerance", "0.04", "Done when the robot centre is within 4 cm of the path's last point (the square centre). Smaller lands closer to the centre, but the approach is slower and the robot shuffles more to get inside it.", ""],
+  ["xy_goal_tolerance", "0.03", "Done when the robot centre is within 3 cm of the path's last point. course_runner ends each path 3 cm past the square centre (goal_extension), so the robot stops on the centre rather than 3 cm short. Smaller lands closer, but the approach is slower and the robot shuffles more to get inside it.", ""],
   ["yaw_goal_tolerance", "3.14", "Heading tolerance; 3.14 accepts any heading.", ""],
-  ["stateful", "true", "Once within 4 cm, the leg stays done while heading is checked. With 3.14 this makes no real difference.", "unused"]
+  ["stateful", "true", "Once within 3 cm, the leg stays done while heading is checked. With 3.14 this makes no real difference.", "unused"]
  ]},
  { id: "rpp", name: "FollowPath (RPP)", sub: "Regulated Pure Pursuit", use: ["run", "every run"],
    note: "RPP drives an arc towards a “carrot” point lookahead_dist ahead on the path. The regulation params slow it on tight arcs, near walls and near the goal. If the carrot is more than rotate_to_heading_min_angle off the nose, it stops and turns on the spot instead.",
    rows: [
-  ["desired_linear_vel", "0.22", "Cruise speed (m/s). Every slow-down below is a fraction of this.", ""],
+  ["desired_linear_vel", "0.18", "Cruise speed (m/s). Every slow-down below is a fraction of this. 0.18 is from the run that “went almost perfectly”; 0.22 if a mission gets close to 3 min.", ""],
   ["lookahead_dist", "0.20", "Distance to the carrot. Shorter follows the path and corners more tightly but reacts more to small pose jumps (wobble). Longer is smoother but cuts corners towards walls.", ""],
   ["min_lookahead_dist / max_lookahead_dist / lookahead_time", "0.15 / 0.35 / 1.5", "Only for the speed-scaled lookahead (speed × time, clamped to min/max). Unused while that is off.", "unused"],
   ["use_velocity_scaled_lookahead_dist", "false", "Use the fixed lookahead_dist. The robot's measured speed is too jumpy to scale from.", ""],
@@ -187,15 +190,15 @@ const NODES = [
   ["transform_tolerance", "0.2", "Oldest TF data (s) RPP accepts.", ""],
   ["min_approach_linear_velocity", "0.08", "Slowest speed (m/s) near the goal. Too low creeps or stalls short of the centre; higher rolls further past it.", ""],
   ["approach_velocity_scaling_dist", "0.20", "Within this distance (m) of the path's end, speed drops in proportion to the distance left, down to 0.08.", ""],
-  ["use_collision_detection", "true", "Projects the current arc ahead and stops with “collision ahead” if the footprint would hit an obstacle in the local costmap.", ""],
+  ["use_collision_detection", "true", "Projects the current arc ahead and stops with “collision ahead” if the 0.14 m disc footprint would hit an obstacle in the local costmap (which only sees the walls since max_obstacle_height was set).", ""],
   ["max_allowed_time_to_collision_up_to_carrot", "1.0", "How far ahead that check looks, in seconds of travel and never past the carrot.", ""],
   ["use_regulated_linear_velocity_scaling", "true", "Slow down on tight arcs.", ""],
-  ["regulated_linear_scaling_min_radius", "0.45", "On arcs tighter than this radius (m), speed becomes speed × radius / 0.45. A 0.30 m arc gives 0.15 m/s.", ""],
+  ["regulated_linear_scaling_min_radius", "0.45", "On arcs tighter than this radius (m), speed becomes speed × radius / 0.45. A 0.29 m corner arc gives 0.18 × 0.29 / 0.45 ≈ 0.12 m/s, which is the floor below.", ""],
   ["regulated_linear_scaling_min_speed", "0.12", "Lowest speed the arc and wall slow-downs can reach; the goal approach can go lower. A run with 0.08 got stuck turning.", ""],
-  ["use_cost_regulated_linear_velocity_scaling", "true", "Slow down near obstacles, based on the local costmap cost under the robot centre.", ""],
-  ["cost_scaling_dist", "0.12", "Slowing starts when the robot centre is within 0.12 m of an obstacle. The padded footprint is 0.105 m from centre to side, so this only happens with the side within about 1.5 cm of a wall.", ""],
-  ["cost_scaling_gain", "1.0", "Strength of that slow-down: speed × gain × distance / 0.12.", ""],
-  ["inflation_cost_scaling_factor", "10.0", "Lets RPP convert a cost back into a distance. Must equal the local inflation_layer.cost_scaling_factor, and it does.", ""],
+  ["use_cost_regulated_linear_velocity_scaling", "false", "Slow down near obstacles, based on the local costmap cost under the robot centre. Off: now that the local costmap sees the walls, it would slow the robot everywhere in a 58 cm square. Both friends' setups run it off.", ""],
+  ["cost_scaling_dist", "0.12", "Only for the near-obstacle slow-down, which is off: slowing would start with the robot centre within 0.12 m of an obstacle.", "unused"],
+  ["cost_scaling_gain", "1.0", "Only for the near-obstacle slow-down, which is off: speed × gain × distance / 0.12.", "unused"],
+  ["inflation_cost_scaling_factor", "10.0", "Only for the near-obstacle slow-down, which is off: lets RPP turn a cost back into a distance. Kept equal to the local inflation_layer.cost_scaling_factor.", "unused"],
   ["allow_reversing", "false", "Never drive backwards along the path.", ""],
   ["use_rotate_to_heading", "true", "Allows on-the-spot turns.", ""],
   ["rotate_to_heading_min_angle", "0.785", "Carrot more than this (rad, 45°) off the nose → stop and turn on the spot; less → arc. Lower means more stop-and-turn and zigzag on small errors; higher means arcing through bigger errors.", ""],
@@ -203,7 +206,7 @@ const NODES = [
   ["max_robot_pose_search_dist", "1.0", "How far along the path (m) RPP searches for the point nearest the robot, so it can't jump to a later part of the path.", ""]
  ]},
  { id: "costmaps", name: "local_costmap / global_costmap", sub: "Obstacle maps", use: ["run", "every run"],
-   note: "Values are shown as local · global. The local costmap (controller_server) is what RPP and Spin check for collisions. The global costmap (planner_server) is what NavFn plans on and what course_runner reads to find blocked squares.",
+   note: "Values are shown as local · global. The local costmap (controller_server) is what RPP and Spin check for collisions. The global costmap (planner_server) is what NavFn plans on and what course_runner reads to find blocked squares, before and during each leg. Until PR #9 the scan source had no max_obstacle_height, so both obstacle layers dropped every scan point and the local costmap stayed empty.",
    rows: [
   ["update_frequency", "10.0 · 2.0", "How often (Hz) the layers update with new scan obstacles and inflation.", ""],
   ["publish_frequency", "5.0 · 1.0", "How often (Hz) the costmap is published, for RViz, Spin's collision check and course_runner's blocked-square check.", ""],
@@ -211,22 +214,24 @@ const NODES = [
   ["robot_base_frame", "base_link", "Robot frame.", "launch"],
   ["rolling_window", "true · (false)", "The local map is a window that moves with the robot.", ""],
   ["width / height", "2 / 2 · —", "Window size (m). RPP only sees the part of the path inside it.", ""],
-  ["resolution", "0.05 · 0.05", "Cell size (m). The global costmap follows the map file's own 0.05.", ""],
-  ["footprint", "±0.095 square", "Robot outline (19 × 19 cm, base_link at the centre), used for collision checks and inflation.", ""],
-  ["footprint_padding", "0.01", "Extra margin (m) around the footprint, 21 × 21 cm in total.", ""],
+  ["resolution", "0.05 · 0.04854167", "Cell size (m). The global costmap follows the map file's own 0.04854167 (a 58.25 cm square is 12 cells).", ""],
+  ["initial_transform_timeout", "— · 600.0", "How long (s) the global costmap waits for map→odom at start-up. AMCL only publishes it once course_runner sends the start pose, so the run can start more than a minute after the launch (the default 60 s made Nav2 give up).", ""],
+  ["robot_radius", "0.14", "Robot outline as a disc (radius, m), used for collision checks and inflation. It covers the 18 × 19 cm robot turning on the spot (13.1 cm half-diagonal plus margin), so a pose that is safe is also safe to turn in. Replaces the 19 × 19 cm square footprint.", ""],
+  ["footprint_padding", "0.0", "Extra margin (m) around the footprint. 0, because the disc already carries the margin.", ""],
   ["track_unknown_space", "(false) · true", "Keeps unmapped cells as unknown, so the planner avoids them.", ""],
   ["plugins", "obstacle, inflation · static, obstacle, inflation", "Layers. The local map has no static layer, so it sees walls only through the live lidar.", ""],
   ["always_send_full_costmap", "true · true", "Publish the whole map each time rather than only the changes.", ""],
   ["static_layer.plugin", "— · StaticLayer", "Walls from rb3302_map.yaml.", ""],
   ["static_layer.map_subscribe_transient_local", "— · true", "Receive the map that map_server publishes once at start-up.", ""],
-  ["obstacle_layer.plugin, enabled", "ObstacleLayer, true", "Marks what the lidar sees right now. In the global map, this is what marks an unmapped obstacle in a square.", ""],
+  ["obstacle_layer.plugin, enabled", "ObstacleLayer, true", "Marks what the lidar sees right now. In the global map, this is what marks an unmapped obstacle in a square, which course_runner then routes around.", ""],
   ["observation_sources", "scan", "List of sensors.", ""],
   ["scan.topic, scan.data_type", "/scan, LaserScan", "Sensor topic and message type.", "launch"],
   ["scan.marking / scan.clearing", "true / true", "Mark beam end points as obstacles, and clear the cells the beams pass through.", ""],
+  ["scan.max_obstacle_height", "2.0 · 2.0", "Scan points higher than this (m) are dropped. Nav2's default for a source is 0.0 and the lidar sits 9 cm above base_link, so without it every point was dropped and the layer was blind.", ""],
   ["scan.obstacle_min_range / obstacle_max_range", "0.15 / 2.0 · 0.15 / 2.5", "Range (m) within which returns are marked.", ""],
   ["scan.raytrace_min_range / raytrace_max_range", "0.15 / 2.5 · 0.15 / 3.0", "Range (m) within which cells are cleared. The max should be at least the marking max.", ""],
   ["inflation_layer.plugin", "InflationLayer", "Adds a cost halo around obstacles.", ""],
-  ["inflation_radius", "0.25 · 0.30", "How far (m) the halo reaches. Locally it drives RPP's near-wall slow-down; globally it pulls NavFn paths to the middle of squares.", ""],
+  ["inflation_radius", "0.25 · 0.30", "How far (m) the halo reaches. Locally it would drive RPP's near-wall slow-down, which is off, so it only shows in RViz; globally it pulls NavFn paths to the middle of squares.", ""],
   ["cost_scaling_factor", "10.0 · 10.0", "How fast the halo's cost falls with distance. Higher lets paths run closer to walls; lower pulls them more strongly to the middle.", ""]
  ]},
  { id: "map", name: "map_server", sub: "Serves the map", use: ["run", "every run"], note: "",
@@ -254,15 +259,15 @@ const NODES = [
   ["transform_tolerance", "0.2", "Oldest TF data (s) accepted.", ""],
   ["simulate_ahead_time", "1.0", "Spin and BackUp check this many seconds of motion ahead in the local costmap, and stop with “collision ahead” if the footprint would hit something.", ""],
   ["max_rotational_vel", "1.8", "Spin's top turn rate (rad/s). 2.5 overshot.", ""],
-  ["min_rotational_vel", "0.6", "Spin's slowest rate, used at the end of a turn. Lower values stalled.", ""],
-  ["rotational_acc_lim", "4.0", "Sets how early Spin slows down: rate = √(2 × 4.0 × angle left), kept between 0.6 and 1.8. Full speed until 23° from the target, down to 0.6 rad/s for the last 2.6°. Higher brakes later, so it overshoots more. No ramp at the start: Spin begins at full rate.", ""]
+  ["min_rotational_vel", "1.0", "Spin's slowest rate, used at the end of a turn. 0.6 was below the ~0.8–1.0 rad/s this base needs to beat tyre scrub, so a turn could stall a few degrees short and wait out its time allowance.", ""],
+  ["rotational_acc_lim", "4.0", "Sets how early Spin slows down: rate = √(2 × 4.0 × angle left), kept between 1.0 and 1.8. Full speed until 23° from the target, down to 1.0 rad/s for the last 7°. Higher brakes later, so it overshoots more. No ramp at the start: Spin begins at full rate.", ""]
  ]},
  { id: "velsmooth", name: "velocity_smoother", sub: "Limits RPP's commands only", use: ["run", "every run"], note: "",
    rows: [
   ["smoothing_frequency", "20.0", "Output rate (Hz) to /cmd_vel.", ""],
   ["feedback", "OPEN_LOOP", "Assumes the robot is doing what it was last told (its own last output) rather than reading the measured odometry.", ""],
-  ["max_velocity / min_velocity", "[0.25, 0, 2.8] / [-0.25, 0, -2.8]", "Speed caps as [forward m/s, sideways, turn rad/s]. Above RPP's 0.22 and 1.5, so normally never reached.", ""],
-  ["max_accel", "[0.6, 0, 6.0]", "How fast speed may rise: 0.22 m/s in about 0.4 s, a 1.5 rad/s turn in 0.25 s.", ""],
+  ["max_velocity / min_velocity", "[0.25, 0, 2.8] / [-0.25, 0, -2.8]", "Speed caps as [forward m/s, sideways, turn rad/s]. Above RPP's 0.18 and 1.5, so normally never reached.", ""],
+  ["max_accel", "[0.6, 0, 6.0]", "How fast speed may rise: 0.18 m/s in about 0.3 s, a 1.5 rad/s turn in 0.25 s.", ""],
   ["max_decel", "[-0.6, 0, -10.0]", "How fast speed may fall: a 1.5 rad/s turn stops in 0.15 s, less overshoot when RPP ends a turn.", ""],
   ["deadband_velocity", "[0, 0, 0]", "Commands smaller than this are sent as 0. Off.", ""],
   ["velocity_timeout", "1.0", "If RPP sends nothing for 1 s, ramp to 0 and stop publishing. Until then it keeps publishing zeros after a leg ends, on the same /cmd_vel that Spin uses.", ""],
