@@ -38,7 +38,12 @@ course_runner:
     centre_ahead_angle: 1.05  # ...and only if the centre is within 60 deg of the heading
     centre_turn_angle: 0.785  # before a turn on the spot bigger than this (rad), get onto the centre first
     centre_turn_limit: 1.75   # ...facing a centre up to ~100 deg to the side with a small turn first
-    blocked_cost: 99      # global costmap value (99 inscribed, 100 lethal) that blocks a square
+    blocked_cost: 100     # costmap value counted as an obstacle mark (100 lethal; 99 would include inflation)
+    obstacle_wall_clearance: 0.08 # only marks further than this (m) from any mapped wall count as an obstacle
+    obstacle_min_cells: 2 # marked cells a square needs to count as holding the obstacle
+    dead_end_backout: true    # leave H/J/K/N backwards when facing into them, instead of a 180 deg turn
+    backup_speed: 0.10        # m/s when backing out
+    backup_time_allowance: 10.0
     monitor_period: 0.5   # while driving, check the path ahead in the costmap this often (s)
     monitor_distance: 1.2 # how far ahead along the path to check (m)
     replan_attempts: 2    # grid replans per leg before falling back to the Nav2 planner

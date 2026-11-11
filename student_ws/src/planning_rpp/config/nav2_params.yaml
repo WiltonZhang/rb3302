@@ -129,9 +129,9 @@ controller_server:
       use_collision_detection: true  # project the motion ahead; stop with "collision ahead" if the footprint would hit
       max_allowed_time_to_collision_up_to_carrot: 1.0  # how far ahead (s of travel, not past the carrot) that check looks
       use_regulated_linear_velocity_scaling: true  # slow down on tight arcs
-      # arcs tighter than this (m): speed x radius / 0.35. Less slowing on gentle
-      # arcs; the 0.29 m corner arcs still slow to the 0.12 floor. (was 0.45)
-      regulated_linear_scaling_min_radius: 0.35
+      # arcs tighter than this (m): speed x radius / 0.38. Owner: 0.38 ran best on
+      # the robot (0.35 tried; ba2057e 0.45).
+      regulated_linear_scaling_min_radius: 0.38
       # Below ~0.12 m/s the arc turn command (speed x curvature) is too small to
       # turn the skid-steer (0cbd2e4 used 0.08 and got stuck turning).
       regulated_linear_scaling_min_speed: 0.12
