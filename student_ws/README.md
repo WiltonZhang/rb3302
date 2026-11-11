@@ -176,9 +176,11 @@ stops on it. The path is sent straight to the RPP controller (`follow_path`) and
 shown on `/plan`. While the robot drives, the runner watches the global costmap
 1.2 m ahead along the route: if a square on it becomes blocked (the obstacle),
 the leg is stopped and replanned around that square. After each goal the robot
-drives forward onto the centre if it stopped more than 4 cm off, stops 3.5 s,
+drives forward onto the centre if it stopped more than 3 cm off, stops 3.5 s,
 and then turns on the spot onto the next leg there, on the centre and clear of
-the walls. If a leg fails it is replanned, and the last resort is Nav2's planner
+the walls. Before any turn on the spot bigger than 45°, if the robot is still
+more than 3 cm off the centre (e.g. off to one side), it first turns a little
+to face the centre, drives onto it, and only then makes the big turn. If a leg fails it is replanned, and the last resort is Nav2's planner
 (`navigate_to_pose`). If you know which square holds the obstacle, add
 `--avoid P`. `--planner nav2` uses the Nav2 waypoint follower with NavFn A* instead.
 

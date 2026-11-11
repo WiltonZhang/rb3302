@@ -338,8 +338,10 @@ class CourseRunner(Node):
         self.declare_parameter('align_min_angle', 0.20)
         self.declare_parameter('align_time_allowance', 10.0)
         self.declare_parameter('goal_extension', 0.08)
-        self.declare_parameter('centre_tolerance', 0.04)
+        self.declare_parameter('centre_tolerance', 0.03)
         self.declare_parameter('centre_ahead_angle', 1.05)
+        self.declare_parameter('centre_turn_angle', 0.785)
+        self.declare_parameter('centre_turn_limit', 1.75)
         self.declare_parameter('blocked_cost', 99)
         self.declare_parameter('monitor_period', 0.5)
         self.declare_parameter('monitor_distance', 1.2)
@@ -374,6 +376,8 @@ class CourseRunner(Node):
         self.goal_extension = float(param('goal_extension'))
         self.centre_tolerance = float(param('centre_tolerance'))
         self.centre_ahead_angle = float(param('centre_ahead_angle'))
+        self.centre_turn_angle = float(param('centre_turn_angle'))
+        self.centre_turn_limit = float(param('centre_turn_limit'))
         self.blocked_cost = int(param('blocked_cost'))
         self.monitor_period = float(param('monitor_period'))
         self.monitor_distance = float(param('monitor_distance'))
@@ -869,21 +873,39 @@ class CourseRunner(Node):
     def publish_path(self, poses):
         self.path_pub.publish(self.make_path(poses))
 
+    def spin_by(self, delta):
+        """Turn on the spot by delta rad (behavior_server Spin, which slows
+        down before the target). True if it finished."""
+        goal = Spin.Goal()
+        goal.target_yaw = delta
+        goal.time_allowance = Duration(sec=int(self.align_allowance))
+        result = self._send(self.spin_client, goal, 'spin')
+        return result is not None and result.status == GoalStatus.STATUS_SUCCEEDED
+
     def turn_to(self, target_yaw):
-        """Turn on the spot (behavior_server Spin, which slows down before the
-        target) so RPP starts each leg already facing along it."""
+        """Turn on the spot so RPP starts each leg already facing along it.
+
+        A turn bigger than centre_turn_angle sweeps the footprint's corners
+        round, so the robot first gets onto the centre of the square it is in
+        (centre_on with allow_turn), then makes the big turn there."""
         pose = self.robot_pose()
         if pose is None:
             return
         delta = wrap_angle(target_yaw - pose[2])
         if abs(delta) < self.align_min_angle:
             return
+        if abs(delta) > self.centre_turn_angle:
+            letter = self.cell_of(pose[0], pose[1])
+            if letter is not None:
+                self.centre_on(letter, allow_turn=True)
+                pose = self.robot_pose()
+                if pose is None:
+                    return
+                delta = wrap_angle(target_yaw - pose[2])
+                if abs(delta) < self.align_min_angle:
+                    return
         self.get_logger().info('turning %.0f deg onto the leg' % math.degrees(delta))
-        goal = Spin.Goal()
-        goal.target_yaw = delta
-        goal.time_allowance = Duration(sec=int(self.align_allowance))
-        result = self._send(self.spin_client, goal, 'spin')
-        if result is None or result.status != GoalStatus.STATUS_SUCCEEDED:
+        if not self.spin_by(delta):
             self.get_logger().warn('turn onto the leg did not finish, RPP will correct')
 
     def path_monitor(self, poses, goal):
@@ -975,12 +997,16 @@ class CourseRunner(Node):
         self.get_logger().warn('using the Nav2 planner for %s' % goal)
         return self.navigate_to(goal)
 
-    def centre_on(self, letter):
-        """If the robot stopped more than centre_tolerance from the centre of
-        letter and the centre is ahead of it (within centre_ahead_angle), drive
-        forward onto it once. Scoring needs the robot over the label, and the
-        next leg's turn on the spot must happen on the centre, clear of the
-        walls. Never turns round: a centre behind the robot is left alone."""
+    def centre_on(self, letter, allow_turn=False):
+        """If the robot is more than centre_tolerance from the centre of letter,
+        drive forward onto it once. Scoring needs the robot over the label, and
+        a big turn on the spot must happen on the centre, clear of the walls.
+
+        A centre within centre_ahead_angle of the heading is driven to
+        directly. With allow_turn, a centre further round (up to
+        centre_turn_limit, i.e. to the side) is first faced with a small turn;
+        that turn is short because the robot is only a few cm off the centre.
+        Never turns round: a centre behind the robot is left alone."""
         pose = self.robot_pose()
         if pose is None:
             return
@@ -989,12 +1015,23 @@ class CourseRunner(Node):
         if error <= self.centre_tolerance:
             return
         bearing = math.atan2(y - pose[1], x - pose[0])
-        off = abs(wrap_angle(bearing - pose[2]))
+        turn = wrap_angle(bearing - pose[2])
+        off = abs(turn)
         if off > self.centre_ahead_angle:
+            if not allow_turn or off > self.centre_turn_limit:
+                self.get_logger().info(
+                    '%.0f mm from the centre of %s, but it is %.0f deg off the heading; '
+                    'not turning round' % (1000.0 * error, letter, math.degrees(off)))
+                return
             self.get_logger().info(
-                '%.0f mm from the centre of %s, but it is %.0f deg off the heading; '
-                'not turning round' % (1000.0 * error, letter, math.degrees(off)))
-            return
+                '%.0f mm from the centre of %s, turning %.0f deg to face it'
+                % (1000.0 * error, letter, math.degrees(turn)))
+            if not self.spin_by(turn):
+                self.get_logger().warn('could not turn towards the centre of %s' % letter)
+                return
+            pose = self.robot_pose()
+            if pose is None:
+                return
         self.get_logger().info(
             '%.0f mm from the centre of %s, driving forward onto it' % (1000.0 * error, letter))
         poses = extend_path(

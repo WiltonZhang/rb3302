@@ -33,8 +33,10 @@ course_runner:
     align_min_angle: 0.20 # turn on the spot before a leg if heading is off by more (rad)
     align_time_allowance: 10.0
     goal_extension: 0.08  # end each path this far past the centre; = xy_goal_tolerance so the robot stops on it
-    centre_tolerance: 0.04    # drive forward onto a goal centre if further off (m)
+    centre_tolerance: 0.03    # drive forward onto a goal centre if further off (m)
     centre_ahead_angle: 1.05  # ...and only if the centre is within 60 deg of the heading
+    centre_turn_angle: 0.785  # before a turn on the spot bigger than this (rad), get onto the centre first
+    centre_turn_limit: 1.75   # ...facing a centre up to ~100 deg to the side with a small turn first
     blocked_cost: 99      # global costmap value (99 inscribed, 100 lethal) that blocks a square
     monitor_period: 0.5   # while driving, check the path ahead in the costmap this often (s)
     monitor_distance: 1.2 # how far ahead along the path to check (m)
