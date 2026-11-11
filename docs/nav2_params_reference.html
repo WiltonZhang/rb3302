@@ -74,7 +74,7 @@ footer { padding-block: 32px 0; color: var(--muted); font-size: 13px; }
 
 <div class="wrap">
   <header class="top">
-    <div class="eyebrow">student_ws · planning_rpp/config/nav2_params.yaml · main after PR #9 (720e729)</div>
+    <div class="eyebrow">student_ws · planning_rpp/config/nav2_params.yaml · main @ 9433548</div>
     <h1>RB3302 Nav2 Parameters</h1>
     <p>What every parameter in the Wave Rover's Nav2 file does, and what changing it tunes. The <code>planning_astar</code> copy is identical. Values tagged <span class="tag launch">launch</span> are overwritten by <code>planning.launch.py</code> at start-up; rows tagged <span class="tag unused">no effect</span> are set but do nothing in this setup.</p>
   </header>
@@ -93,7 +93,7 @@ footer { padding-block: 32px 0; color: var(--muted); font-size: 13px; }
       <div><b>Pose</b><span>The EKF (set up in the launch file, not in this yaml) publishes <code>/odom</code>; <code>amcl</code> corrects it against the map. Launched with <code>raw_odom_topic:=/odom/raw_signed</code>, the EKF reads its wheel speed from course_runner's <code>odom_sign</code>, which restores the sign the board leaves off (without it, turning on the spot and reversing read as driving forward).</span></div>
       <div><b>Start</b><span>course_runner publishes the start pose, then asks <code>amcl</code> for stationary updates (<code>request_nomotion_update</code>) until the scan lies on mapped walls, and clears both costmaps. The robot doesn't move.</span></div>
       <div><b>Legs and corner arcs</b><span>course_runner sends its own grid path to <code>controller_server</code>, which runs RPP (<code>FollowPath</code>). RPP → <code>velocity_smoother</code> → <code>/cmd_vel</code>. While a leg runs, course_runner watches the global costmap 1.2 m ahead; a square that becomes blocked stops the leg and it is replanned around it.</span></div>
-      <div><b>Turn before each leg</b><span><code>behavior_server</code> Spin, on the square centre (also the start spin with <code>--localise spin</code>). It publishes straight to <code>/cmd_vel</code>, so the velocity smoother's limits don't apply to it.</span></div>
+      <div><b>Turn before each leg</b><span><code>behavior_server</code> Spin, on the square centre (also the start spin with <code>--localise spin</code>). Before any turn bigger than 45°, a robot more than 3 cm off the centre first turns a little to face it and drives onto it. It publishes straight to <code>/cmd_vel</code>, so the velocity smoother's limits don't apply to it.</span></div>
       <div><b>Only if a grid leg fails</b><span>course_runner hands the leg to <code>navigate_to_pose</code> (<code>bt_navigator</code> + <code>planner_server</code>).</span></div>
       <div><b>Only with <code>--planner nav2</code></b><span><code>waypoint_follower</code>.</span></div>
       <div><b>Never called</b><span><code>smoother_server</code>.</span></div>
@@ -124,6 +124,8 @@ const SYM = [
   ["Wide or late corners", "lookahead_dist, regulated_linear_scaling_min_radius, regulated_linear_scaling_min_speed, plus corner_radius in course.yaml"],
   ["Stopping near walls with “collision ahead”", "use_collision_detection, max_allowed_time_to_collision_up_to_carrot, failure_tolerance, footprint / footprint_padding, Spin simulate_ahead_time"],
   ["Turning on the spot while RViz shows it sliding or flying away", "The wheel speed has no sign: run odom_sign and launch with raw_odom_topic:=/odom/raw_signed. Then AMCL alpha1–alpha4, update_min_a."],
+  ["Swinging while turning in to the goal centre", "use_fixed_curvature_lookahead, curvature_lookahead_dist, interpolate_curvature_after_goal; xy_goal_tolerance with goal_extension in course.yaml (keep them equal); approach_velocity_scaling_dist"],
+  ["Hitting a wall while turning on the spot", "footprint / footprint_padding, Spin simulate_ahead_time, plus centre_tolerance, centre_turn_angle and centre_turn_limit in course.yaml (get onto the centre before big turns)"],
   ["RViz pose drifting away from the real robot", "AMCL alpha1–alpha4, sigma_hit, z_hit / z_rand, update_min_d / update_min_a, recovery_alpha_*"],
   ["Obstacle not seen or not routed around", "scan.max_obstacle_height in both costmaps, plus blocked_cost and monitor_distance in course.yaml"]
 ];
