@@ -335,7 +335,7 @@ class CourseRunner(Node):
         self.declare_parameter('path_step', 0.025)
         self.declare_parameter('turn_penalty', 0.5)
         self.declare_parameter('stop_seconds', 3.5)
-        self.declare_parameter('align_min_angle', 0.20)
+        self.declare_parameter('align_min_angle', 0.30)
         self.declare_parameter('align_time_allowance', 6.0)
         self.declare_parameter('goal_extension', 0.08)
         self.declare_parameter('centre_tolerance', 0.06)

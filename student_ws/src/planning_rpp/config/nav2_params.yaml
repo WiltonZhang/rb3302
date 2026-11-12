@@ -22,7 +22,9 @@ amcl:
     # phantom forward motion during turns on the spot and lost the robot
     # (std 0.4-0.56 m in the c2bb18f / 04af912 runs). Friend B runs 0.3-0.4,
     # friend A 0.8. (116bdf3: 0.1, 0.1, 0.1, 0.1, 0.2)
-    alpha1: 0.4    # rotation noise from rotation
+    # alpha1: less heading spread added while turning, so the heading is steadier
+    # after a turn (was 0.4). alpha2-4 stay: 0.1 lost the robot before.
+    alpha1: 0.3    # rotation noise from rotation
     alpha2: 0.3    # rotation noise from translation
     alpha3: 0.4    # translation noise from translation
     alpha4: 0.4    # translation noise from rotation
@@ -30,14 +32,16 @@ amcl:
     laser_model_type: likelihood_field  # scores a scan by how far each beam end is from the nearest mapped wall
     laser_min_range: 0.15            # ignore returns off the robot's own body
     laser_max_range: 6.0             # whole course is < 4 m across
-    max_beams: 90  # beams used per scan; more = more accurate, more CPU
+    # beams used per scan: twice the evidence per update for a steadier pose; back to
+    # 90 if the controller logs "Control loop missed its desired rate". (was 90)
+    max_beams: 180
     sigma_hit: 0.1  # how closely (m) a beam end must match a wall; smaller = sharper pose, loses track more easily
-    # Weight scan points that land on mapped walls more (friend A's values,
-    # tuned on a real-robot recording). (116bdf3: z_hit 0.6, z_rand 0.4)
-    z_hit: 0.8
-    z_rand: 0.2  # weight of "beam is noise"; more tolerates unmapped things (obstacle, people)
+    # Trust scan points that land on mapped walls more: the course is static and well
+    # mapped (friend B 0.9 / 0.1). (was 0.8 / 0.2; 116bdf3: 0.6 / 0.4)
+    z_hit: 0.9
+    z_rand: 0.1  # weight of "beam is noise"; more tolerates unmapped things (obstacle, people)
     laser_likelihood_max_dist: 1.0  # beam ends further (m) from any wall count as a miss
-    min_particles: 500  # fewest particles
+    min_particles: 1000  # fewest particles; keeps spread for recovering from a bad correction (was 500)
     max_particles: 3000  # most particles; more = more robust, more CPU
     pf_err: 0.05  # allowed error when choosing the particle count
     pf_z: 0.99  # confidence when choosing the particle count
@@ -45,7 +49,9 @@ amcl:
     # Update every ~3 deg of turning so the heading stays right through turns
     # (friend A 0.05, friend B 0.03). (116bdf3: 0.1)
     update_min_a: 0.05
-    resample_interval: 1  # updates between resamplings; 1 = every update
+    # resample every 2nd update: less jumping between nearby estimates and less particle
+    # collapse while standing still, so steadier turns. (was 1)
+    resample_interval: 2
     # No random particles: in a grid of identical squares they jump to the wrong square.
     recovery_alpha_fast: 0.0
     recovery_alpha_slow: 0.0  # with recovery_alpha_fast: random-particle injection, off
@@ -144,10 +150,10 @@ controller_server:
       inflation_cost_scaling_factor: 10.0   # must match local inflation_layer
       allow_reversing: false  # never drive backwards along the path
       use_rotate_to_heading: true  # allow turns on the spot
-      # Turn on the spot only when the carrot is more than 45 deg off. 0.5 (7f6eeaf)
-      # and 0.25 (d4c9121) turned small AMCL corrections into stop-and-spin events;
-      # 1.0 (0cbd2e4) started turns too late.
-      rotate_to_heading_min_angle: 0.785
+      # Turn on the spot only when the carrot is more than ~52 deg off. Owner tested 0.9:
+      # fewer stop-and-turn flips than 0.785. 0.5 (7f6eeaf) and 0.25 (d4c9121) turned
+      # small AMCL corrections into stop-and-spin events. (was 0.785)
+      rotate_to_heading_min_angle: 0.9
       # RPP limits each turn command to the measured turn rate + accel * dt. At 2.0
       # that is 0.1 rad/s from standstill, which never beats tyre scrub.
       max_angular_accel: 20.0
@@ -299,9 +305,10 @@ behavior_server:
     # degrees short and sit there until the time allowance ran out (a stop at the
     # turn). 1.0 rad/s did turn the robot in the first field test. (116bdf3: 0.6)
     min_rotational_vel: 1.0
-    # Spin slows at sqrt(2 x 3.0 x angle left): full speed until ~22 deg, 1.0 rad/s
-    # for the last ~10 deg. Gentler than 4.0, so less swing. (was 4.0)
-    rotational_acc_lim: 3.0
+    # Spin slows at sqrt(2 x 4.0 x angle left): full speed until ~16 deg, 1.0 rad/s for
+    # the last ~7 deg, so less slow creep at the end of a turn (3.0 was too careful).
+    # (was 3.0)
+    rotational_acc_lim: 4.0
 
 velocity_smoother:
   ros__parameters:
