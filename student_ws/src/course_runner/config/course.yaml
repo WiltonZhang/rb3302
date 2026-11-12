@@ -21,6 +21,12 @@ course_runner:
     localise_match_fraction: 0.95   # stop once this share of scan points match
     localise_max_updates: 50
     localise_timeout: 30.0
+    # ...and AMCL's own spread must stay small on several updates in a row, after at
+    # least localise_min_time standing still (friend's SUCCESS_RPP start-up check)
+    localise_max_xy_std: 0.05     # largest x/y standard deviation (m)
+    localise_max_yaw_std: 0.087   # heading standard deviation (rad, 5 deg)
+    localise_stable_updates: 5    # updates in a row within both
+    localise_min_time: 3.0        # stand still at least this long (s)
     # --localise spin: one full turn instead
     spin_angle: 6.283
     spin_time_allowance: 25.0
@@ -34,6 +40,10 @@ course_runner:
     align_time_allowance: 6.0   # give up a stuck turn on the spot after this (s)
     goal_extension: 0.06  # end each leg's path this far past the centre (= goal checker xy tolerance; was 0.08)
     centre_goal_extension: 0.06   # final drive onto the centre ends this far past it (= its checker's xy tolerance; was 0.08)
+    # End a leg (and the drive onto a centre) as soon as the robot is in the goal
+    # square and has passed its centre along the path; sideways error does not count,
+    # so no hunting for the goal checker's circle (friend's SUCCESS_RPP arrival).
+    arrive_on_crossing: true
     # Leaving a dead end (H, J, K, N) after centring on it: turn to face the exit and
     # drive straight onto the exit square's centre at the normal speed (2x dashed),
     # turning like Spin in 48fe575, with its own LiDAR wall checks; the normal leg
@@ -55,6 +65,11 @@ course_runner:
     centre_turn_angle: 0.785  # before a turn on the spot bigger than this (rad), get onto the centre first
     centre_turn_limit: 1.75   # ...facing a centre up to ~100 deg to the side with a small turn first
     blocked_cost: 99      # global costmap value (99 inscribed, 100 lethal) that blocks a square
+    # The blocked square is the one holding the obstacle, not the first path point in its
+    # inflation (a box in P was blamed on Q): nearest lethal non-wall cell within this of
+    # the blocked path point, then this far on along the path (its body behind the face).
+    obstacle_search_radius: 0.15  # m; >= inscribed radius 0.134
+    obstacle_depth: 0.05          # m
     monitor_period: 0.5   # while driving, check the path ahead in the costmap this often (s)
     monitor_distance: 1.2 # how far ahead along the path to check (m)
     replan_attempts: 2    # grid replans per leg before falling back to the Nav2 planner

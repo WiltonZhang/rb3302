@@ -329,6 +329,11 @@ class CourseRunner(Node):
         self.declare_parameter('localise_match_fraction', 0.95)
         self.declare_parameter('localise_max_updates', 50)
         self.declare_parameter('localise_timeout', 30.0)
+        # ...and AMCL itself must be sure: spread small on several updates in a row
+        self.declare_parameter('localise_max_xy_std', 0.05)
+        self.declare_parameter('localise_max_yaw_std', 0.087)
+        self.declare_parameter('localise_stable_updates', 5)
+        self.declare_parameter('localise_min_time', 3.0)
         # grid planner
         self.declare_parameter('base_frame', 'base_link')
         self.declare_parameter('corner_radius', 0.29)
@@ -343,6 +348,8 @@ class CourseRunner(Node):
         self.declare_parameter('centre_turn_angle', 0.785)
         self.declare_parameter('centre_turn_limit', 1.75)
         self.declare_parameter('blocked_cost', 99)
+        self.declare_parameter('obstacle_search_radius', 0.15)
+        self.declare_parameter('obstacle_depth', 0.05)
         self.declare_parameter('monitor_period', 0.5)
         self.declare_parameter('monitor_distance', 1.2)
         self.declare_parameter('replan_attempts', 2)
@@ -351,6 +358,7 @@ class CourseRunner(Node):
         self.declare_parameter('goal_checker_id', 'goal_checker')
         self.declare_parameter('centre_goal_checker_id', 'goal_checker')
         self.declare_parameter('centre_goal_extension', 0.06)
+        self.declare_parameter('arrive_on_crossing', True)
         # fast exit from a dead end (H, J, K, N) after it has been centred
         self.declare_parameter('fast_exit', True)
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
@@ -381,6 +389,10 @@ class CourseRunner(Node):
         self.match_fraction = float(param('localise_match_fraction'))
         self.localise_max_updates = int(param('localise_max_updates'))
         self.localise_timeout = float(param('localise_timeout'))
+        self.max_xy_std = float(param('localise_max_xy_std'))
+        self.max_yaw_std = float(param('localise_max_yaw_std'))
+        self.stable_updates = int(param('localise_stable_updates'))
+        self.localise_min_time = float(param('localise_min_time'))
         self.base_frame = str(param('base_frame'))
         self.corner_radius = float(param('corner_radius'))
         self.path_step = float(param('path_step'))
@@ -394,6 +406,8 @@ class CourseRunner(Node):
         self.centre_turn_angle = float(param('centre_turn_angle'))
         self.centre_turn_limit = float(param('centre_turn_limit'))
         self.blocked_cost = int(param('blocked_cost'))
+        self.obstacle_radius = float(param('obstacle_search_radius'))
+        self.obstacle_depth = float(param('obstacle_depth'))
         self.monitor_period = float(param('monitor_period'))
         self.monitor_distance = float(param('monitor_distance'))
         self.replan_attempts = int(param('replan_attempts'))
@@ -402,6 +416,7 @@ class CourseRunner(Node):
         self.goal_checker_id = str(param('goal_checker_id'))
         self.centre_goal_checker_id = str(param('centre_goal_checker_id'))
         self.centre_goal_extension = float(param('centre_goal_extension'))
+        self.arrive_on_crossing = bool(param('arrive_on_crossing'))
         self.fast_exit = bool(param('fast_exit'))
         self.exit_linear_speed = float(param('exit_linear_speed'))
         self.exit_linear_accel = float(param('exit_linear_accel'))
@@ -671,13 +686,30 @@ class CourseRunner(Node):
             self.map_msg, self.scan_msg, (tr.x, tr.y, q.x, q.y, q.z, q.w),
             self.match_distance)
 
+    def amcl_std(self):
+        """(xy, yaw) standard deviation of the latest AMCL pose, or None.
+        xy is the largest axis of the x/y covariance ellipse, so a spread
+        along a diagonal counts as much as one along x or y."""
+        if self.amcl_msg is None:
+            return None
+        c = self.amcl_msg.pose.covariance
+        xx, yy, xy = c[0], c[7], 0.5 * (c[1] + c[6])
+        if not all(math.isfinite(v) for v in (xx, yy, xy, c[35])) \
+                or min(xx, yy, c[35]) < 0.0:
+            return None
+        largest = 0.5 * (xx + yy + math.hypot(xx - yy, 2.0 * xy))
+        return math.sqrt(max(0.0, largest)), math.sqrt(c[35])
+
     def localise_still(self):
         """Converge AMCL without moving the robot.
 
         Each request_nomotion_update makes AMCL run one LiDAR update although
         the robot has not moved. Repeat until localise_match_fraction of the
-        scan points lie within localise_match_distance of a mapped wall (or
-        localise_max_updates / localise_timeout), then clear the costmaps.
+        scan points lie within localise_match_distance of a mapped wall AND
+        AMCL's own spread has stayed within localise_max_xy_std /
+        localise_max_yaw_std for localise_stable_updates updates in a row, and
+        at least localise_min_time has passed (or localise_max_updates /
+        localise_timeout), then clear the costmaps.
         """
         if not self.nomotion_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().warn(
@@ -686,6 +718,8 @@ class CourseRunner(Node):
         start = time.monotonic()
         fraction = None
         updates = 0
+        stable = 0
+        ok = False
         while updates < self.localise_max_updates \
                 and time.monotonic() - start < self.localise_timeout:
             before = self.amcl_count
@@ -699,13 +733,25 @@ class CourseRunner(Node):
                 continue
             updates += 1
             fraction = self.scan_match()
-            if fraction is not None and fraction >= self.match_fraction:
+            std = self.amcl_std()
+            if std is not None and std[0] <= self.max_xy_std and std[1] <= self.max_yaw_std:
+                stable += 1
+            else:
+                stable = 0
+            ok = (fraction is not None and fraction >= self.match_fraction
+                  and stable >= self.stable_updates)
+            if ok and time.monotonic() - start >= self.localise_min_time:
                 break
             if updates % 10 == 0:
                 self.get_logger().info(
-                    'localising: %d updates, scan on walls %s'
-                    % (updates, 'n/a' if fraction is None else '%.0f %%' % (100 * fraction)))
-        ok = fraction is not None and fraction >= self.match_fraction
+                    'localising: %d updates, scan on walls %s, AMCL std %s, %d/%d steady'
+                    % (updates, 'n/a' if fraction is None else '%.0f %%' % (100 * fraction),
+                       'n/a' if std is None else '%.0f mm / %.1f deg'
+                       % (1000.0 * std[0], math.degrees(std[1])),
+                       stable, self.stable_updates))
+        # minimum time not reached but already sure: stand still for the rest
+        if ok:
+            self.pause(max(0.0, self.localise_min_time - (time.monotonic() - start)))
         text = 'n/a (check /map, /scan, TF)' if fraction is None else '%.0f %%' % (100 * fraction)
         if ok:
             self.get_logger().info(
@@ -730,12 +776,16 @@ class CourseRunner(Node):
         self.pause(0.5)
 
     # ------------------------------------------------------------- actions
-    def _send(self, client, goal, name, feedback_cb=None, retries=10, monitor=None):
+    def _send(self, client, goal, name, feedback_cb=None, retries=10, monitor=None,
+              arrived=None):
         """Send an action goal, retrying while Nav2 is still activating.
 
         monitor: optional callable checked every monitor_period while the goal
         runs; when it returns something truthy the goal is cancelled and that
         value is kept in self.stopped_by_monitor.
+        arrived: optional callable checked on every loop (~20 Hz); when it
+        returns True the goal is cancelled and self.stopped_by_monitor is
+        'arrived'.
         """
         self.get_logger().info('waiting for %s action server ...' % name)
         if not client.wait_for_server(timeout_sec=self.server_timeout):
@@ -749,16 +799,17 @@ class CourseRunner(Node):
             handle = future.result()
             if handle is not None and handle.accepted:
                 result_future = handle.get_result_async()
-                if monitor is None:
+                if monitor is None and arrived is None:
                     rclpy.spin_until_future_complete(self, result_future)
                     return result_future.result()
                 next_check = time.monotonic() + self.monitor_period
                 while not result_future.done():
                     rclpy.spin_once(self, timeout_sec=0.05)
-                    if time.monotonic() < next_check:
-                        continue
-                    next_check = time.monotonic() + self.monitor_period
-                    reason = monitor()
+                    reason = 'arrived' if arrived is not None and arrived() else None
+                    if not reason and monitor is not None \
+                            and time.monotonic() >= next_check:
+                        next_check = time.monotonic() + self.monitor_period
+                        reason = monitor()
                     if reason:
                         self.stopped_by_monitor = reason
                         cancel = handle.cancel_goal_async()
@@ -850,12 +901,64 @@ class CourseRunner(Node):
             return None
         return grid.data[iy * info.width + ix]
 
+    def static_wall(self, x, y):
+        """True if the saved map has a wall (or unknown) within one map cell of (x, y)."""
+        grid = self.map_msg
+        if grid is None:
+            return False
+        info = grid.info
+        ix = int(math.floor((x - info.origin.position.x) / info.resolution))
+        iy = int(math.floor((y - info.origin.position.y) / info.resolution))
+        for j in range(ix - 1, ix + 2):
+            for k in range(iy - 1, iy + 2):
+                if not (0 <= j < info.width and 0 <= k < info.height):
+                    return True
+                value = grid.data[k * info.width + j]
+                if value < 0 or value >= 50:
+                    return True
+        return False
+
+    def obstacle_square(self, x, y, yaw):
+        """Square holding what blocks the path point (x, y, yaw).
+
+        A blocked path point lies within the inflation of the obstacle, so it
+        can be in the square before the one the obstacle stands in (a box in P
+        blamed on Q). Take instead the nearest lethal costmap cell within
+        obstacle_search_radius that is not a mapped wall: that is the face of
+        the obstacle the LiDAR sees. Its body lies further along the path, so
+        step obstacle_depth ahead before looking up the square. With no such
+        cell, fall back to the square of the path point."""
+        grid = self.costmap
+        if grid is None:
+            return self.cell_of(x, y)
+        info = grid.info
+        res = info.resolution
+        ox, oy = info.origin.position.x, info.origin.position.y
+        cx = int(math.floor((x - ox) / res))
+        cy = int(math.floor((y - oy) / res))
+        n = int(math.ceil(self.obstacle_radius / res))
+        best, best_d = None, math.inf
+        for j in range(cx - n, cx + n + 1):
+            for k in range(cy - n, cy + n + 1):
+                if not (0 <= j < info.width and 0 <= k < info.height):
+                    continue
+                if grid.data[k * info.width + j] < 100:
+                    continue
+                wx, wy = ox + (j + 0.5) * res, oy + (k + 0.5) * res
+                d = math.hypot(wx - x, wy - y)
+                if d < best_d and d <= self.obstacle_radius and not self.static_wall(wx, wy):
+                    best, best_d = (wx, wy), d
+        if best is None:
+            return self.cell_of(x, y)
+        return self.cell_of(best[0] + self.obstacle_depth * math.cos(yaw),
+                            best[1] + self.obstacle_depth * math.sin(yaw))
+
     def first_blocked_square(self, poses, ignore):
-        """First square on the path where the robot centre would be in collision."""
-        for x, y, _ in poses:
+        """First square on the path that holds something the robot would hit."""
+        for x, y, yaw in poses:
             value = self.costmap_value(x, y)
             if value is not None and value >= self.blocked_cost:
-                letter = self.cell_of(x, y)
+                letter = self.obstacle_square(x, y, yaw)
                 if letter is not None and letter not in ignore:
                     return letter
         return None
@@ -965,7 +1068,7 @@ class CourseRunner(Node):
                 value = self.costmap_value(poses[k][0], poses[k][1])
                 if value is None or value < self.blocked_cost:
                     continue
-                letter = self.cell_of(poses[k][0], poses[k][1])
+                letter = self.obstacle_square(*poses[k])
                 if letter is None or letter in (here, goal):
                     continue
                 state['seen'][letter] = state['seen'].get(letter, 0) + 1
@@ -977,13 +1080,40 @@ class CourseRunner(Node):
 
         return check
 
-    def follow_path(self, poses, monitor=None, goal_checker_id=None):
+    def crossing(self, letter, yaw):
+        """Callable for _send: True once the robot is in square letter and has
+        passed its centre along yaw (the path's final direction). Only how far
+        along counts, not how far to the side, so a robot a few cm beside the
+        centre line does not hunt for the goal checker's circle."""
+        cx, cy = self.square_center(letter)
+        ux, uy = math.cos(yaw), math.sin(yaw)
+
+        def check():
+            pose = self.robot_pose()
+            if pose is None or self.cell_of(pose[0], pose[1]) != letter:
+                return False
+            return (cx - pose[0]) * ux + (cy - pose[1]) * uy <= 0.0
+
+        return check
+
+    def follow_path(self, poses, monitor=None, goal_checker_id=None, arrive_at=None):
+        """Run FollowPath along poses. arrive_at: square whose centre ends the
+        leg as soon as the robot passes it (arrive_on_crossing)."""
         goal = FollowPath.Goal()
         goal.path = self.make_path(poses)
         goal.controller_id = self.controller_id
         goal.goal_checker_id = goal_checker_id or self.goal_checker_id
         self.stopped_by_monitor = None
-        result = self._send(self.follow_path_client, goal, 'follow_path', monitor=monitor)
+        arrived = None
+        if arrive_at is not None and self.arrive_on_crossing:
+            arrived = self.crossing(arrive_at, poses[-1][2])
+        result = self._send(self.follow_path_client, goal, 'follow_path',
+                            monitor=monitor, arrived=arrived)
+        if self.stopped_by_monitor == 'arrived':
+            self.stop_robot()
+            self.stopped_by_monitor = None
+            self.get_logger().info('passed the centre of %s, stopping' % arrive_at)
+            return True
         return result is not None and result.status == GoalStatus.STATUS_SUCCEEDED
 
     def navigate_to(self, letter):
@@ -1008,7 +1138,7 @@ class CourseRunner(Node):
                 'route %s (attempt %d)' % (' -> '.join(route), attempt))
             self.publish_path(poses)
             self.turn_to(poses[0][2])
-            if self.follow_path(poses, monitor=self.path_monitor(poses, goal)):
+            if self.follow_path(poses, monitor=self.path_monitor(poses, goal), arrive_at=goal):
                 return True
             blocked = self.stopped_by_monitor
             if blocked:
@@ -1068,7 +1198,8 @@ class CourseRunner(Node):
         poses = extend_path(
             rounded_polyline([(pose[0], pose[1]), (x, y)], 0.0, self.path_step),
             self.centre_goal_extension, self.path_step)
-        if not self.follow_path(poses, goal_checker_id=self.centre_goal_checker_id):
+        if not self.follow_path(poses, goal_checker_id=self.centre_goal_checker_id,
+                                arrive_at=letter):
             self.get_logger().warn('could not drive onto the centre of %s' % letter)
 
     def log_stop_error(self, letter):
