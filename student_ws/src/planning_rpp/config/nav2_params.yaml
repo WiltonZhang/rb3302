@@ -107,10 +107,10 @@ controller_server:
       stateful: true  # once within the xy tolerance the leg stays done
     FollowPath:
       plugin: nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController  # plugin implementing this
-      # Template ba2057e, faster: 0.22 is what 116bdf3 ran; stays under the
-      # smoother's 0.25 cap, and the approach slow-down still lands the robot on
-      # the centre slowly. (was 0.18 in ba2057e)
-      desired_linear_vel: 0.22
+      # Owner: faster, ~1.4x (2x at 0.44 worked poorly). Under the smoother's 0.35 cap;
+      # the approach slow-down still lands the robot on the centre slowly.
+      # (was 0.22; ba2057e 0.18)
+      desired_linear_vel: 0.30
       # Fixed 0.25 m lookahead: 0.20 still wobbled a little on each AMCL correction,
       # 0.15 (7f6eeaf) zigzagged; friends run 0.25 and 0.30. Velocity-scaled
       # (0cbd2e4) followed the driver's jumpy speed reading. (was 0.20)
@@ -317,8 +317,9 @@ velocity_smoother:
     feedback: OPEN_LOOP  # assume the robot did what it was last told
     # Driver (driver.launch.py) clamps at 0.8 m/s / 3.0 rad/s. Linear kept low for the
     # 58 cm grid; angular near the clamp because skid-steer turns at ~1/3 of the command.
-    max_velocity: [0.25, 0.0, 2.8]
-    min_velocity: [-0.25, 0.0, -2.8]  # [forward m/s, sideways, turn rad/s] lower caps
+    # linear cap raised with desired_linear_vel 0.30 (was +/-0.25); turn cap unchanged
+    max_velocity: [0.35, 0.0, 2.8]
+    min_velocity: [-0.35, 0.0, -2.8]  # [forward m/s, sideways, turn rad/s] lower caps
     max_accel: [0.6, 0.0, 6.0]  # how fast speed may rise [m/s2, -, rad/s2]
     # Angular decel -10: stop a turn quickly once RPP ends it, so less overshoot.
     max_decel: [-0.6, 0.0, -10.0]
