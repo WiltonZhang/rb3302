@@ -107,10 +107,10 @@ controller_server:
       stateful: true  # once within the xy tolerance the leg stays done
     FollowPath:
       plugin: nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController  # plugin implementing this
-      # Owner: 2x faster. Smoother cap raised to 0.50 to let it through; the
-      # approach slow-down (0.40 m) still lands the robot on the centre slowly.
-      # (was 0.22; ba2057e 0.18)
-      desired_linear_vel: 0.44
+      # Template ba2057e, faster: 0.22 is what 116bdf3 ran; stays under the
+      # smoother's 0.25 cap, and the approach slow-down still lands the robot on
+      # the centre slowly. (was 0.18 in ba2057e)
+      desired_linear_vel: 0.22
       # Fixed 0.25 m lookahead: 0.20 still wobbled a little on each AMCL correction,
       # 0.15 (7f6eeaf) zigzagged; friends run 0.25 and 0.30. Velocity-scaled
       # (0cbd2e4) followed the driver's jumpy speed reading. (was 0.20)
@@ -124,14 +124,14 @@ controller_server:
       # turned in to the centre). These keep the curvature point a fixed 0.25 m
       # ahead, projected past the goal. Added; Jazzy RPP options.
       use_fixed_curvature_lookahead: true
-      curvature_lookahead_dist: 0.35  # distance (m) to that steering point; calmer final curve into goals (was 0.25)
+      curvature_lookahead_dist: 0.25  # distance (m) to that steering point
       interpolate_curvature_after_goal: true  # let the steering point continue past the goal
-      # Owner: 2x faster turns; 3.0 is the driver's clamp. 2.5 (d4c9121) overshot,
-      # so watch for overshoot; 1.2 / 1.0 / 0.8 stalled. (was 1.5)
-      rotate_to_heading_angular_vel: 3.0
+      # The turn rate that ran on the robot. 1.2 / 1.0 / 0.8 (3023d14, dbacc72,
+      # 479a950) stalled near tyre scrub; 2.5 (d4c9121) overshot every turn.
+      rotate_to_heading_angular_vel: 1.5
       transform_tolerance: 0.2  # how long (s) a published or looked-up transform stays valid
       min_approach_linear_velocity: 0.08  # slowest speed (m/s) near the goal; lower stalls, higher rolls past
-      approach_velocity_scaling_dist: 0.40  # within this (m) of the path end, speed drops with the distance left; doubled with the speed (was 0.20)
+      approach_velocity_scaling_dist: 0.20  # within this (m) of the path end, speed drops with the distance left
       use_collision_detection: true  # project the motion ahead; stop with "collision ahead" if the footprint would hit
       max_allowed_time_to_collision_up_to_carrot: 1.0  # how far ahead (s of travel, not past the carrot) that check looks
       use_regulated_linear_velocity_scaling: true  # slow down on tight arcs
@@ -296,19 +296,19 @@ behavior_server:
     # (corners sweep 13.4 cm) 1.0 s (~100 deg) refused turns next to the obstacle
     # or a wall. Friend B uses 0.5. (was 1.0)
     simulate_ahead_time: 0.5
-    # Spin's top turn rate. Owner: 2x faster; 3.0 is the driver's clamp. At 1.8 the
-    # body swung towards walls in dead ends, so watch K/J/H/N. Below ~1.0 stalls.
-    # (was 1.5)
-    max_rotational_vel: 3.0
+    # Spin's top turn rate. At 1.8 the skid-steer body swung several cm towards a
+    # wall during 180 deg turns in dead ends (K -> P); 1.5 turned fine before and
+    # friend B uses it. Below ~1.0 stalls. (was 1.8; 2.5 overshot)
+    max_rotational_vel: 1.5
     # Spin ramps down to this for the last few degrees. 0.6 is below the
     # ~0.8-1.0 rad/s this base needs to beat tyre scrub, so it could stall a few
     # degrees short and sit there until the time allowance ran out (a stop at the
     # turn). 1.0 rad/s did turn the robot in the first field test. (116bdf3: 0.6)
     min_rotational_vel: 1.0
-    # Spin slows at sqrt(2 x 8.0 x angle left): full 3.0 rad/s until ~32 deg from the
-    # target, 1.0 rad/s for the last ~4 deg. Doubled with the speed so it still
-    # brakes in time. (was 4.0)
-    rotational_acc_lim: 8.0
+    # Spin slows at sqrt(2 x 4.0 x angle left): full speed until ~16 deg, 1.0 rad/s for
+    # the last ~7 deg, so less slow creep at the end of a turn (3.0 was too careful).
+    # (was 3.0)
+    rotational_acc_lim: 4.0
 
 velocity_smoother:
   ros__parameters:
@@ -317,14 +317,11 @@ velocity_smoother:
     feedback: OPEN_LOOP  # assume the robot did what it was last told
     # Driver (driver.launch.py) clamps at 0.8 m/s / 3.0 rad/s. Linear kept low for the
     # 58 cm grid; angular near the clamp because skid-steer turns at ~1/3 of the command.
-    # Owner: 2x faster. Caps let 0.44 m/s and 3.0 rad/s (driver clamp) through.
-    # (was [0.25, 0.0, 2.8])
-    max_velocity: [0.50, 0.0, 3.0]
-    min_velocity: [-0.50, 0.0, -3.0]  # [forward m/s, sideways, turn rad/s] lower caps
-    max_accel: [1.2, 0.0, 6.0]  # how fast speed may rise [m/s2, -, rad/s2]; linear doubled (was 0.6)
+    max_velocity: [0.25, 0.0, 2.8]
+    min_velocity: [-0.25, 0.0, -2.8]  # [forward m/s, sideways, turn rad/s] lower caps
+    max_accel: [0.6, 0.0, 6.0]  # how fast speed may rise [m/s2, -, rad/s2]
     # Angular decel -10: stop a turn quickly once RPP ends it, so less overshoot.
-    # Linear decel doubled with the speed (was -0.6).
-    max_decel: [-1.2, 0.0, -10.0]
+    max_decel: [-0.6, 0.0, -10.0]
     deadband_velocity: [0.0, 0.0, 0.0]  # commands smaller than this are sent as 0 (off)
     velocity_timeout: 1.0  # no RPP command for this long (s): ramp to 0
     odom_topic: /odom  # where the robot speed is read
