@@ -25,6 +25,7 @@ def generate_launch_description():
     raw_odom_topic = LaunchConfiguration('raw_odom_topic')
     imu_topic = LaunchConfiguration('imu_topic')
     cmd_vel_topic = LaunchConfiguration('cmd_vel_topic')
+    turn_trim = LaunchConfiguration('turn_trim')
     set_initial_pose = LaunchConfiguration('set_initial_pose')
     initial_pose_x = LaunchConfiguration('initial_pose_x')
     initial_pose_y = LaunchConfiguration('initial_pose_y')
@@ -78,6 +79,9 @@ def generate_launch_description():
         DeclareLaunchArgument('raw_odom_topic', default_value='/odom/raw'),
         DeclareLaunchArgument('imu_topic', default_value='/imu_data_ros'),
         DeclareLaunchArgument('cmd_vel_topic', default_value='/cmd_vel'),
+        # course_runner turn_trim between the velocity smoother and the driver;
+        # false = pass the smoother's commands through unchanged
+        DeclareLaunchArgument('turn_trim', default_value='true'),
         DeclareLaunchArgument('set_initial_pose', default_value='false'),
         DeclareLaunchArgument('initial_pose_x', default_value='0.0'),
         DeclareLaunchArgument('initial_pose_y', default_value='0.0'),
@@ -190,8 +194,23 @@ def generate_launch_description():
             parameters=[configured_params],
             remappings=[
                 ('cmd_vel', 'cmd_vel_nav_raw'),
-                ('cmd_vel_smoothed', cmd_vel_topic),
+                ('cmd_vel_smoothed', 'cmd_vel_trim_in'),
             ],
+        ),
+        # Skid-steer turns at ~1/3-1/2 of the command: trim angular.z with the
+        # IMU turn rate (EKF /odom) so RPP's curves are driven as asked.
+        Node(
+            package='course_runner',
+            executable='turn_trim',
+            name='turn_trim',
+            output='screen',
+            parameters=[{
+                'use_sim_time': use_sim_time,
+                'enabled': turn_trim,
+                'input_topic': 'cmd_vel_trim_in',
+                'output_topic': cmd_vel_topic,
+                'odom_topic': odom_topic,
+            }],
         ),
         Node(
             package='nav2_smoother',
